@@ -1,0 +1,55 @@
+/* Custom scrollbar */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.25); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(148, 163, 184, 0.4); }
+
+/* Utility: smooth fade for new messages/items */
+.fade-in { animation: fadeIn 0.2s ease-out; }
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Online indicator dot */
+.dot-online {
+  width: 10px; height: 10px; background: #10b981; border-radius: 50%;
+  box-shadow: 0 0 0 2px rgba(16,185,129,0.2);
+}
+.dot-offline {
+  width: 10px; height: 10px; background: #475569; border-radius: 50%;
+}
+
+/* Chat message bubble */
+.bubble-other {
+  background: #334155;
+  color: #f1f5f9;
+  border-radius: 14px 14px 14px 4px;
+}
+.bubble-me {
+  background: linear-gradient(135deg,#ec4899,#6366f1);
+  color: white;
+  border-radius: 14px 14px 4px 14px;
+}
+
+/* File item hover */
+.file-item { transition: background 0.15s; }
+.file-item:hover { background: rgba(148,163,184,0.08); }
+.file-item.selected { background: rgba(236,72,153,0.15); }
+
+/* Toast animation */
+#toast.show { animation: toastIn 0.2s ease-out; }
+@keyframes toastIn {
+  from { opacity: 0; transform: translate(-50%, 10px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+/* Modal flex */
+#permModal[style*="flex"], #nameModal[style*="flex"] { display: flex !important; }
+
+/* Mobile chat overlay adjustment */
+@media (max-width: 1023px) {
+  main { flex-direction: column !important; }
+  section:first-of-type { flex: 1 1 50% !important; }
+  section:last-of-type { flex: 0 0 auto !important; height: 45% !important; border-top: 1px solid rgb(51 65 85); }
+}

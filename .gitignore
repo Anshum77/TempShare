@@ -1,0 +1,10 @@
+node_modules/
+uploads/*
+!uploads/.gitkeep
+data/rooms.json
+.env
+.DS_Store
+npm-debug.log*
+yarn-error.log*
+.vscode/
+.idea/

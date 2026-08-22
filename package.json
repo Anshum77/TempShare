@@ -1,0 +1,20 @@
+{
+  "name": "temp-share",
+  "version": "1.0.0",
+  "description": "Temporary link-based collaborative workspace with file sharing, chat, and role-based permissions",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5",
+    "multer": "^1.4.5-lts.1",
+    "cors": "^2.8.5",
+    "uuid": "^9.0.1"
+  }
+}
