@@ -141,6 +141,8 @@ function broadcastRoom(roomId, event, payload) {
 }
 
 // ---------- File Upload ----------
+// Store flat (no subfolders on disk) with unique names; virtual folder structure
+// is reconstructed from metadata (so nested uploads never collide).
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
     const roomId = req.params.roomId;
@@ -150,7 +152,8 @@ const storage = multer.diskStorage({
   },
   filename: function (req, file, cb) {
     // Use a unique storage name to avoid collisions, keep original name in metadata
-    const unique = uid() + '_' + sanitizeFilename(file.originalname);
+    const baseName = path.basename(file.originalname || 'file');
+    const unique = uid() + '_' + sanitizeFilename(baseName);
     cb(null, unique);
   }
 });
@@ -158,6 +161,52 @@ const upload = multer({
   storage,
   limits: { fileSize: MAX_FILE_SIZE }
 });
+
+// ---------- Virtual path helpers ----------
+// Given a POSIX-style relative path like "photos/vacation/img.jpg" and a starting folder id,
+// ensure all intermediate folders exist in room.files and return the parent folder id
+// where the file should live. Folder nodes are created as needed (idempotent — if a folder
+// with the same name already exists at that level, we reuse it).
+function ensureFolderPath(room, userId, relativePath, baseParentId) {
+  if (!relativePath) return baseParentId;
+  // Normalize separators and split
+  const normalized = String(relativePath).replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
+  if (!normalized) return baseParentId;
+  const parts = normalized.split('/').map(p => sanitizeFilename(p)).filter(Boolean);
+  if (parts.length === 0) return baseParentId;
+
+  let currentParentId = baseParentId;
+  const now = Date.now();
+  const uploaderName = (getUser(room, userId) || {}).name || 'Unknown';
+
+  // The last part is the filename, everything else is folders.
+  // We are ONLY creating folders, so drop the filename (caller passes dir-only for files,
+  // full path for files — we handle this by letting caller pass a file-aware path and we
+  // pop the last component below).
+  // Actually: we'll have caller pass the path and a flag, but for reuse we always interpret
+  // the LAST segment as a folder too if `asFolder` is true; here we always treat all parts
+  // as folders because the caller passes only the directory portion for files.
+  for (const part of parts) {
+    if (!part) continue;
+    // Look for existing folder with same name & parent
+    let folder = room.files.find(f => f.type === 'folder' && f.parentId === currentParentId && f.name === part);
+    if (!folder) {
+      const newFolder = {
+        id: uid(),
+        name: part,
+        type: 'folder',
+        parentId: currentParentId,
+        createdBy: userId,
+        createdByName: uploaderName,
+        createdAt: now
+      };
+      room.files.push(newFolder);
+      folder = newFolder;
+    }
+    currentParentId = folder.id;
+  }
+  return currentParentId;
+}
 
 // ---------- REST Routes ----------
 
@@ -230,13 +279,15 @@ app.get('/api/rooms/:roomId', (req, res) => {
   res.json(roomPublicData(room, userId));
 });
 
-// Upload files
-app.post('/api/rooms/:roomId/upload', upload.array('files', 20), (req, res) => {
+// Upload files (supports nested folder uploads via `paths` JSON array)
+// Optional body field: `paths` — JSON array of relative paths (POSIX, using /), one per file,
+// e.g. ["photos/1.jpg", "photos/thumbs/1.jpg", "readme.txt"]. Folders are created automatically.
+// Without `paths`, files are placed directly in parentId (backward-compatible).
+app.post('/api/rooms/:roomId/upload', upload.array('files', 500), (req, res) => {
   const room = getRoom(req.params.roomId);
   if (!room) return res.status(404).json({ error: 'Room not found' });
   const userId = req.body.userId;
   if (!canDo(room, userId, 'can_upload')) {
-    // clean up uploaded files
     (req.files || []).forEach(f => { try { fs.unlinkSync(f.path); } catch(e){} });
     return res.status(403).json({ error: 'You do not have upload permission' });
   }
@@ -245,28 +296,61 @@ app.post('/api/rooms/:roomId/upload', upload.array('files', 20), (req, res) => {
   const parentFolder = room.files.find(f => f.id === parentId && f.type === 'folder');
   if (!parentFolder) return res.status(400).json({ error: 'Invalid folder' });
 
+  // Parse per-file relative paths (for folder uploads)
+  let paths = [];
+  if (req.body.paths) {
+    try { paths = JSON.parse(req.body.paths); } catch (e) { paths = []; }
+  }
+  if (!Array.isArray(paths)) paths = [];
+
+  const uploaderName = (getUser(room, userId) || {}).name || 'Unknown';
   const added = [];
-  for (const f of req.files || []) {
+  const foldersCreatedBefore = room.files.filter(f => f.type === 'folder').length;
+
+  for (let i = 0; i < (req.files || []).length; i++) {
+    const f = req.files[i];
+    const relPath = paths[i]; // may be undefined
+    let fileParentId = parentId;
+    let displayName = sanitizeFilename(f.originalname);
+
+    if (relPath && typeof relPath === 'string') {
+      const normalized = relPath.replace(/\\/g, '/');
+      const parts = normalized.split('/').map(p => sanitizeFilename(p)).filter(Boolean);
+      if (parts.length > 0) {
+        displayName = parts[parts.length - 1];
+        const dirParts = parts.slice(0, -1);
+        if (dirParts.length > 0) {
+          fileParentId = ensureFolderPath(room, userId, dirParts.join('/'), parentId);
+        }
+      }
+    }
+
     const id = uid();
     const node = {
       id,
-      name: sanitizeFilename(f.originalname),
+      name: displayName,
       type: 'file',
-      parentId,
+      parentId: fileParentId,
       size: f.size,
       mimeType: f.mimetype,
       storageName: f.filename,
       uploadedBy: userId,
-      uploadedByName: (getUser(room, userId) || {}).name || 'Unknown',
+      uploadedByName: uploaderName,
       uploadedAt: Date.now()
     };
     room.files.push(node);
     added.push(node);
   }
+
+  const foldersCreatedAfter = room.files.filter(f => f.type === 'folder').length;
+  const newFolderCount = foldersCreatedAfter - foldersCreatedBefore;
+
   saveRooms();
   broadcastRoom(room.id, 'files_updated', { files: room.files });
-  broadcastRoom(room.id, 'activity', { text: `${(getUser(room, userId) || {}).name} uploaded ${added.length} file(s)` });
-  res.json({ files: added });
+  let msg = `${uploaderName} uploaded ${added.length} file(s)`;
+  if (newFolderCount > 0) msg += ` in ${newFolderCount} new folder(s)`;
+  broadcastRoom(room.id, 'activity', { text: msg });
+  res.json({ files: added, foldersCreated: newFolderCount });
 });
 
 // Create folder

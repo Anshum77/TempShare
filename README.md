@@ -11,8 +11,8 @@ Inspired by a mix of Google Drive + WhatsApp + Discord, but ephemeral and link-b
 
 - 🔗 **One-click room creation** — click "Create a Room", get a shareable link instantly.
 - 👥 **Join by link** — no accounts, no passwords (display name only).
-- 📁 **File & folder sharing** — upload multiple files, create folders, organize together.
-- 📤 **Drag & drop uploads** — drop files anywhere in the file panel.
+- 📁 **File & folder sharing** — upload files or entire folders (subfolder structure preserved), create folders, organize together.
+- 📤 **Drag & drop uploads** — drop files *or* entire folders anywhere in the file panel; subfolders are recreated exactly.
 - 💬 **Real-time chat** — powered by Socket.IO, with typing indicators.
 - 🛡️ **Role-based permissions (RBAC):**
   - **Owner** — full control, can promote/demote admins.

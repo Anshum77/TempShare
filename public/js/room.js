@@ -28,6 +28,7 @@ const els = {
   emptyFiles: document.getElementById('emptyFiles'),
   newFolderBtn: document.getElementById('newFolderBtn'),
   fileInput: document.getElementById('fileInput'),
+  folderInput: document.getElementById('folderInput'),
   dropZone: document.getElementById('dropZone'),
   dropOverlay: document.getElementById('dropOverlay'),
   messages: document.getElementById('messages'),
@@ -321,6 +322,9 @@ function updateFilePermissions() {
   els.newFolderBtn.disabled = !can('can_create_folder');
   els.newFolderBtn.classList.toggle('opacity-50', !can('can_create_folder'));
   els.fileInput.disabled = !can('can_upload');
+  els.folderInput.disabled = !can('can_upload');
+  els.folderInput.parentElement.classList.toggle('opacity-50', !can('can_upload'));
+  els.folderInput.parentElement.classList.toggle('pointer-events-none', !can('can_upload'));
 }
 
 function updateRoomNameEditable() {
@@ -356,7 +360,7 @@ async function joinRoom(name) {
   }
 }
 
-async function uploadFiles(fileList) {
+async function uploadFiles(fileList, paths = null) {
   if (!can('can_upload')) return showToast('No upload permission', true);
   const files = Array.from(fileList);
   if (files.length === 0) return;
@@ -364,10 +368,28 @@ async function uploadFiles(fileList) {
   files.forEach(f => fd.append('files', f));
   fd.append('userId', state.userId);
   fd.append('parentId', state.currentFolder);
-  showToast(`Uploading ${files.length} file(s)...`);
+  if (paths && paths.length === files.length) {
+    fd.append('paths', JSON.stringify(paths));
+  }
+  const totalSize = files.reduce((s, f) => s + f.size, 0);
+  const folderMsg = paths ? ` (${new Set(paths.map(p => p.split('/').slice(0,-1).join('/')).filter(Boolean)).size} folders)` : '';
+  showToast(`Uploading ${files.length} file(s)${folderMsg} — ${formatSize(totalSize)}`);
   try {
-    await fetch(`/api/rooms/${roomId}/upload`, { method: 'POST', body: fd });
-    // files_updated event will refresh
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `/api/rooms/${roomId}/upload`);
+    await new Promise((resolve, reject) => {
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) resolve(xhr.response);
+        else {
+          try { reject(new Error(JSON.parse(xhr.response).error || 'Upload failed')); }
+          catch(e) { reject(new Error('Upload failed')); }
+        }
+      };
+      xhr.onerror = () => reject(new Error('Network error'));
+      xhr.send(fd);
+    });
+    showToast(`Uploaded ${files.length} file(s)${folderMsg} successfully`);
+    // files_updated event will refresh the list
   } catch(e) {
     showToast('Upload failed: ' + e.message, true);
   }
@@ -612,6 +634,66 @@ els.fileInput.addEventListener('change', (e) => {
   e.target.value = '';
 });
 
+els.folderInput.addEventListener('change', (e) => {
+  // When using webkitdirectory, the browser provides `webkitRelativePath` on each File
+  const files = Array.from(e.target.files || []);
+  const paths = files.map(f => f.webkitRelativePath || f.name);
+  uploadFiles(files, paths);
+  e.target.value = '';
+});
+
+// ---------- Drag-and-drop (files + folders) ----------
+// Recursively read dropped items so folders preserve structure.
+function readEntry(entry, pathPrefix = '') {
+  return new Promise((resolve) => {
+    if (entry.isFile) {
+      entry.file(file => {
+        // Attach relative path for our upload handler
+        Object.defineProperty(file, 'relPath', { value: pathPrefix + file.name });
+        resolve([file]);
+      }, () => resolve([]));
+    } else if (entry.isDirectory) {
+      const reader = entry.createReader();
+      const allEntries = [];
+      const readBatch = () => {
+        reader.readEntries(async (batch) => {
+          if (batch.length === 0) {
+            const results = [];
+            for (const child of allEntries) {
+              const childFiles = await readEntry(child, pathPrefix + entry.name + '/');
+              results.push(...childFiles);
+            }
+            resolve(results);
+          } else {
+            allEntries.push(...batch);
+            readBatch();
+          }
+        }, () => resolve([]));
+      };
+      readBatch();
+    } else {
+      resolve([]);
+    }
+  });
+}
+
+async function getDroppedFiles(dt) {
+  const items = dt.items;
+  // If we have DataTransferItemList with webkitGetAsEntry, use it (handles folders)
+  if (items && items.length && items[0].webkitGetAsEntry) {
+    const files = [];
+    for (let i = 0; i < items.length; i++) {
+      const entry = items[i].webkitGetAsEntry();
+      if (!entry) continue;
+      const got = await readEntry(entry, '');
+      files.push(...got);
+    }
+    return files;
+  }
+  // Fallback: plain files list (no structure info)
+  return Array.from(dt.files || []);
+}
+
 // Drag & drop
 ;['dragenter','dragover'].forEach(ev => {
   els.dropZone.addEventListener(ev, (e) => {
@@ -625,9 +707,12 @@ els.fileInput.addEventListener('change', (e) => {
     els.dropOverlay.classList.add('hidden');
   });
 });
-els.dropZone.addEventListener('drop', (e) => {
-  if (e.dataTransfer.files && e.dataTransfer.files.length) {
-    uploadFiles(e.dataTransfer.files);
+els.dropZone.addEventListener('drop', async (e) => {
+  const dropped = await getDroppedFiles(e.dataTransfer);
+  if (dropped.length) {
+    const paths = dropped.map(f => f.relPath || f.name);
+    const hasFolderStructure = dropped.some(f => f.relPath && f.relPath.includes('/'));
+    uploadFiles(dropped, hasFolderStructure ? paths : null);
   }
 });
 
