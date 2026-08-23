@@ -24,6 +24,8 @@ function showToast(msg, isError = false) {
 
 createBtn.addEventListener('click', async () => {
   const name = nameInput.value.trim() || ('Guest_' + Math.floor(Math.random() * 1000));
+  const expirySelect = document.getElementById('expirySelect');
+  const expiresInHours = Number(expirySelect?.value || 24);
   localStorage.setItem('ts_lastname', name);
   createBtn.disabled = true;
   createBtn.innerHTML = '<span class="animate-spin">⏳</span> Creating...';
@@ -31,7 +33,7 @@ createBtn.addEventListener('click', async () => {
     const res = await fetch('/api/rooms', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, roomName: roomNameInput.value.trim() })
+      body: JSON.stringify({ name, roomName: roomNameInput.value.trim(), expiresInHours })
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Failed');

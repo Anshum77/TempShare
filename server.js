@@ -14,7 +14,8 @@ const io = new Server(server, { cors: { origin: '*' } });
 const PORT = process.env.PORT || 3000;
 const DATA_FILE = path.join(__dirname, 'data', 'rooms.json');
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
-const ROOM_EXPIRY_HOURS = parseInt(process.env.ROOM_EXPIRY_HOURS || '24', 10);
+const DEFAULT_EXPIRY_HOURS = parseInt(process.env.ROOM_EXPIRY_HOURS || '24', 10);
+const MAX_EXPIRY_HOURS = parseInt(process.env.MAX_EXPIRY_HOURS || String(365 * 24), 10); // 1 year
 const MAX_FILE_SIZE = parseInt(process.env.MAX_FILE_SIZE || String(50 * 1024 * 1024), 10); // 50MB
 
 app.use(cors());
@@ -47,22 +48,31 @@ function saveRooms() {
 
 let rooms = loadRooms();
 
+// ---------- Delete room (wipe all files + metadata) ----------
+function deleteRoom(roomId) {
+  const roomDir = path.join(UPLOADS_DIR, roomId);
+  try { if (fs.existsSync(roomDir)) fs.rmSync(roomDir, { recursive: true, force: true }); } catch(e) {}
+  delete rooms[roomId];
+}
+
 // Expire old rooms
 function pruneExpiredRooms() {
   const now = Date.now();
-  let changed = false;
+  const expiredIds = [];
   for (const roomId of Object.keys(rooms)) {
     if (rooms[roomId].expiresAt && rooms[roomId].expiresAt < now) {
-      // Delete uploads for room
-      const roomDir = path.join(UPLOADS_DIR, roomId);
-      try { if (fs.existsSync(roomDir)) fs.rmSync(roomDir, { recursive: true, force: true }); } catch(e) {}
-      delete rooms[roomId];
-      changed = true;
+      expiredIds.push(roomId);
     }
   }
-  if (changed) saveRooms();
+  for (const id of expiredIds) {
+    // Notify connected users right before wiping
+    io.to('room:' + id).emit('room_deleted', { reason: 'expired' });
+    io.to('room:' + id).socketsLeave('room:' + id);
+    deleteRoom(id);
+  }
+  if (expiredIds.length) saveRooms();
 }
-setInterval(pruneExpiredRooms, 60 * 1000);
+setInterval(pruneExpiredRooms, 30 * 1000);
 pruneExpiredRooms();
 
 // ---------- Helpers ----------
@@ -213,7 +223,6 @@ function ensureFolderPath(room, userId, relativePath, baseParentId) {
 // Create room
 app.post('/api/rooms', (req, res) => {
   const roomId = shortRoomId();
-  // avoid collision
   if (rooms[roomId]) return res.status(500).json({ error: 'Try again' });
 
   const ownerId = uid();
@@ -221,11 +230,32 @@ app.post('/api/rooms', (req, res) => {
   const roomName = (req.body.roomName && String(req.body.roomName).trim()) || 'Untitled Room';
 
   const now = Date.now();
+  let expiryMs = DEFAULT_EXPIRY_HOURS * 60 * 60 * 1000;
+  if (req.body.expiresInHours != null) {
+    const hours = Number(req.body.expiresInHours);
+    if (!Number.isFinite(hours) || hours <= 0) {
+      return res.status(400).json({ error: 'expiresInHours must be a positive number' });
+    }
+    if (hours > MAX_EXPIRY_HOURS) {
+      return res.status(400).json({ error: `Maximum expiry is ${MAX_EXPIRY_HOURS} hours (1 year)` });
+    }
+    expiryMs = Math.round(hours * 60 * 60 * 1000);
+  } else if (req.body.expiresAt != null) {
+    const ts = Number(req.body.expiresAt);
+    if (!Number.isFinite(ts) || ts <= now) {
+      return res.status(400).json({ error: 'expiresAt must be a future timestamp' });
+    }
+    if (ts - now > MAX_EXPIRY_HOURS * 3600000) {
+      return res.status(400).json({ error: `Maximum expiry is ${MAX_EXPIRY_HOURS} hours (1 year)` });
+    }
+    expiryMs = ts - now;
+  }
+
   rooms[roomId] = {
     id: roomId,
     name: roomName,
     createdAt: now,
-    expiresAt: now + ROOM_EXPIRY_HOURS * 60 * 60 * 1000,
+    expiresAt: now + expiryMs,
     ownerId,
     users: [{
       id: ownerId,
@@ -492,17 +522,63 @@ app.patch('/api/rooms/:roomId/users/:userId/role', (req, res) => {
   res.json({ user: target });
 });
 
-// Rename room
+// Rename room / change expiry
 app.patch('/api/rooms/:roomId', (req, res) => {
   const room = getRoom(req.params.roomId);
   if (!room) return res.status(404).json({ error: 'Room not found' });
   const userId = req.body.userId;
   const user = getUser(room, userId);
   if (!user || (user.role !== 'owner' && user.role !== 'admin')) return res.status(403).json({ error: 'Not allowed' });
-  if (req.body.name) room.name = String(req.body.name).slice(0, 60);
+
+  let changed = false;
+  if (typeof req.body.name === 'string') {
+    const newName = String(req.body.name).slice(0, 60).trim();
+    if (newName && newName !== room.name) { room.name = newName; changed = true; }
+  }
+  if (req.body.expiresInHours != null) {
+    if (user.role !== 'owner') return res.status(403).json({ error: 'Only the owner can change expiry' });
+    const hours = Number(req.body.expiresInHours);
+    if (Number.isFinite(hours) && hours > 0 && hours <= MAX_EXPIRY_HOURS) {
+      room.expiresAt = Date.now() + Math.round(hours * 60 * 60 * 1000);
+      changed = true;
+    } else {
+      return res.status(400).json({ error: `Expiry must be between 1 hour and ${MAX_EXPIRY_HOURS} hours (1 year)` });
+    }
+  }
+  if (req.body.expiresAt != null) {
+    if (user.role !== 'owner') return res.status(403).json({ error: 'Only the owner can change expiry' });
+    const ts = Number(req.body.expiresAt);
+    const now = Date.now();
+    if (Number.isFinite(ts) && ts > now && ts - now <= MAX_EXPIRY_HOURS * 3600000) {
+      room.expiresAt = ts;
+      changed = true;
+    } else {
+      return res.status(400).json({ error: 'Invalid expiry date' });
+    }
+  }
+
+  if (changed) {
+    saveRooms();
+    broadcastRoom(room.id, 'room_updated', { name: room.name, expiresAt: room.expiresAt });
+    broadcastRoom(room.id, 'activity', { text: `${user.name} updated room settings` });
+  }
+  res.json({ name: room.name, expiresAt: room.expiresAt });
+});
+
+// Delete room (owner only)
+app.delete('/api/rooms/:roomId', (req, res) => {
+  const room = getRoom(req.params.roomId);
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+  const userId = req.body.userId || req.query.userId;
+  const user = getUser(room, userId);
+  if (!user || user.role !== 'owner') return res.status(403).json({ error: 'Only the owner can delete the room' });
+
+  const roomId = room.id;
+  io.to('room:' + roomId).emit('room_deleted', { reason: 'deleted' });
+  io.to('room:' + roomId).socketsLeave('room:' + roomId);
+  deleteRoom(roomId);
   saveRooms();
-  broadcastRoom(room.id, 'room_updated', { name: room.name });
-  res.json({ name: room.name });
+  res.json({ ok: true });
 });
 
 // ---------- Socket.IO ----------
@@ -591,5 +667,5 @@ app.get('/', (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`TempShare running on http://localhost:${PORT}`);
-  console.log(`Rooms expire after ${ROOM_EXPIRY_HOURS}h. Uploads dir: ${UPLOADS_DIR}`);
+  console.log(`Default room expiry: ${DEFAULT_EXPIRY_HOURS}h. Max expiry: ${MAX_EXPIRY_HOURS}h. Uploads dir: ${UPLOADS_DIR}`);
 });

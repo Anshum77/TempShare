@@ -19,10 +19,11 @@ Inspired by a mix of Google Drive + WhatsApp + Discord, but ephemeral and link-b
   - **Admin** — can manage member permissions and room settings.
   - **Member** — permissions configurable per user (chat / upload / create folders / delete / rename).
 - 🟢 **Online presence** — see who's currently in the room.
-- ⏳ **Auto-expiring rooms** — rooms (and their files) are automatically deleted after 24 hours (configurable).
+- ⏳ **Custom auto-expiry (1 hour → 1 year)** — choose when creating, owner can change anytime; everything (files + chat) is permanently wiped when the timer runs out.
+- 🗑️ **Owner "Delete Room"** — instantly destroy the room and all its data; everyone gets disconnected.
 - 📱 **Responsive UI** — works on desktop and mobile.
 - 📋 **Copy invite link** button for easy sharing.
-- 🕐 Activity feed showing who joined / uploaded / changed roles.
+- 🕐 Activity feed showing who joined / uploaded / changed roles / updated settings.
 
 ---
 
@@ -45,12 +46,13 @@ Then open [http://localhost:3000](http://localhost:3000) in your browser.
 | Variable | Default | Description |
 |---|---|---|
 | `PORT` | `3000` | Port the server listens on |
-| `ROOM_EXPIRY_HOURS` | `24` | How many hours until rooms and their files are auto-deleted |
+| `ROOM_EXPIRY_HOURS` | `24` | Default expiry for new rooms (in hours) |
+| `MAX_EXPIRY_HOURS` | `8760` (1 year) | Hard cap users can extend a room's expiry to |
 | `MAX_FILE_SIZE` | `52428800` (50 MB) | Max upload size per file in bytes |
 
 Example:
 ```bash
-ROOM_EXPIRY_HOURS=48 MAX_FILE_SIZE=104857600 npm start
+ROOM_EXPIRY_HOURS=48 MAX_EXPIRY_HOURS=8760 MAX_FILE_SIZE=104857600 npm start
 ```
 
 ---
@@ -78,14 +80,15 @@ temp-share/
 
 ## 🧑‍💻 How to Use
 
-1. Open the homepage, enter your name, click **Create a Room**.
+1. Open the homepage, enter your name, pick an **auto-delete** duration (1 hour → 1 year), then click **Create a Room**.
 2. You'll be taken to your new room. Click **Copy Link** and share it with others.
 3. Others open the link, enter their name, and land in the same room.
-4. **Upload files** (button or drag & drop), **create folders**, and **chat** in the right panel.
-5. As owner, click the ⚙️ icon next to any user's name in the sidebar to:
+4. **Upload files** (button or drag & drop, including whole folders), **create folders**, and **chat** in the right panel.
+5. The header shows a live countdown ⏳ until the room expires. As **owner**, click the pencil icon next to it to change the expiry anytime.
+6. As owner, click the **red Delete button** in the header to instantly wipe the room and disconnect everyone (double-confirm).
+7. As owner/admin, click the ⚙️ icon next to any user's name in the sidebar to:
    - Toggle individual permissions (chat, upload, delete, create folder, rename).
    - Promote to admin / demote to member (owner-only).
-6. Rooms auto-delete after `ROOM_EXPIRY_HOURS` — great for quick, temporary collaboration.
 
 ---
 
@@ -171,7 +174,6 @@ server {
 - 💾 Persistent database (MongoDB / PostgreSQL / Redis) instead of JSON file
 - 🔔 Browser notifications for mentions
 - 👀 Read receipts
-- 🗑️ "Delete room" button for owner
 - 🧭 File previews (images, PDFs, text)
 - 🔗 File sharing links (per-file public URLs)
 - 🌙 Dark/light theme toggle

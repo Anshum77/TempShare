@@ -6,10 +6,11 @@ let state = {
   room: null,
   userId: localStorage.getItem('ts_user_' + roomId) || null,
   currentFolder: 'root',
-  folderPath: [], // array of folder nodes from root to current
+  folderPath: [],
   typingTimeout: null,
   isTyping: false,
-  sidebarOpen: false
+  sidebarOpen: false,
+  expiryInterval: null
 };
 
 // DOM elements
@@ -17,6 +18,13 @@ const els = {
   roomName: document.getElementById('roomName'),
   roomCode: document.getElementById('roomCode'),
   expiryText: document.getElementById('expiryText'),
+  changeExpiryBtn: document.getElementById('changeExpiryBtn'),
+  expiryBadge: document.getElementById('expiryBadge'),
+  expiryModal: document.getElementById('expiryModal'),
+  closeExpiryModal: document.getElementById('closeExpiryModal'),
+  expirySelect: document.getElementById('expirySelect'),
+  saveExpiryBtn: document.getElementById('saveExpiryBtn'),
+  deleteRoomBtn: document.getElementById('deleteRoomBtn'),
   copyLinkBtn: document.getElementById('copyLinkBtn'),
   toggleSidebar: document.getElementById('toggleSidebar'),
   sidebar: document.getElementById('sidebar'),
@@ -49,6 +57,84 @@ const els = {
 };
 
 // ---------- Utilities ----------
+function formatDuration(ms) {
+  if (ms <= 0) return 'expired';
+  const sec = Math.floor(ms / 1000);
+  const min = Math.floor(sec / 60);
+  const hr = Math.floor(min / 60);
+  const day = Math.floor(hr / 24);
+  if (day >= 365) return `~${Math.round(day/365)} year(s)`;
+  if (day >= 30) return `~${Math.round(day/30)} month(s)`;
+  if (day >= 1) return `${day}d ${hr % 24}h`;
+  if (hr >= 1) return `${hr}h ${min % 60}m`;
+  if (min >= 1) return `${min}m ${sec % 60}s`;
+  return `${sec}s`;
+}
+
+function nearestExpiryOption(hours) {
+  const options = [1, 6, 24, 72, 168, 720, 2190, 8760];
+  let best = options[0];
+  for (const o of options) {
+    if (Math.abs(o - hours) < Math.abs(best - hours)) best = o;
+  }
+  return String(best);
+}
+
+function updateExpiryBadge() {
+  if (!state.room) return;
+  const ms = state.room.expiresAt - Date.now();
+  els.expiryText.textContent = '⏳ ' + formatDuration(ms);
+  els.expiryBadge.classList.remove('bg-slate-700/60', 'bg-amber-600/30', 'bg-red-600/40');
+  if (ms < 1000 * 60 * 60) {
+    els.expiryBadge.classList.add('bg-red-600/40');
+  } else if (ms < 1000 * 60 * 60 * 24) {
+    els.expiryBadge.classList.add('bg-amber-600/30');
+  } else {
+    els.expiryBadge.classList.add('bg-slate-700/60');
+  }
+  if (ms <= 0) {
+    clearInterval(state.expiryInterval);
+    showToast('This room has expired', true);
+    setTimeout(() => window.location.href = '/', 1500);
+  }
+}
+
+async function changeExpiry(hours) {
+  try {
+    const data = await api(`/api/rooms/${roomId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ userId: state.userId, expiresInHours: hours })
+    });
+    state.room.expiresAt = data.expiresAt;
+    updateExpiryBadge();
+    els.expiryModal.style.display = 'none';
+    showToast('Expiry updated');
+  } catch(e) { showToast(e.message, true); }
+}
+
+async function deleteRoom() {
+  const ok1 = await Dialog.confirm(
+    'This will permanently erase ALL files, folders, and chat messages. This cannot be undone.',
+    'Delete this room?',
+    { okText: 'Delete', danger: true }
+  );
+  if (!ok1) return;
+  const ok2 = await Dialog.confirm(
+    'Everyone currently in the room will be disconnected immediately.',
+    'Are you really sure?',
+    { okText: 'Yes, delete it', danger: true }
+  );
+  if (!ok2) return;
+  try {
+    await api(`/api/rooms/${roomId}`, {
+      method: 'DELETE',
+      body: JSON.stringify({ userId: state.userId })
+    });
+    showToast('Room deleted');
+    setTimeout(() => window.location.href = '/', 1000);
+  } catch(e) { showToast(e.message, true); }
+}
+
 function showToast(msg, isError = false) {
   let t = document.getElementById('toast');
   if (!t) {
@@ -134,14 +220,18 @@ function renderHeader() {
   els.roomName.readOnly = !editable;
   els.roomName.title = editable ? 'Click to rename room' : '';
 
-  const ms = state.room.expiresAt - Date.now();
-  if (ms > 0) {
-    const h = Math.floor(ms / 3600000);
-    const m = Math.floor((ms % 3600000) / 60000);
-    els.expiryText.textContent = h > 0 ? `Expires in ${h}h ${m}m` : `Expires in ${m}m`;
-  } else {
-    els.expiryText.textContent = 'Expiring soon';
-  }
+  // Owner controls
+  const isOwner = me() && me().role === 'owner';
+  els.changeExpiryBtn.classList.toggle('hidden', !isOwner);
+  els.deleteRoomBtn.classList.toggle('hidden', !isOwner);
+  els.deleteRoomBtn.classList.toggle('flex', isOwner);
+  els.expiryBadge.classList.remove('hidden');
+  els.expiryBadge.classList.add('flex');
+
+  // Start/refresh countdown
+  clearInterval(state.expiryInterval);
+  updateExpiryBadge();
+  state.expiryInterval = setInterval(updateExpiryBadge, 1000);
 }
 
 function renderUsers() {
@@ -271,20 +361,22 @@ function renderFiles() {
     });
 
     const renameBtn = row.querySelector('.rename-btn');
-    if (renameBtn) renameBtn.addEventListener('click', (e) => {
+    if (renameBtn) renameBtn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      const newName = prompt('Rename to:', node.name);
-      if (newName && newName.trim() && newName !== node.name) {
-        renameFile(node.id, newName.trim());
+      const newName = await Dialog.prompt(`Enter a new name for "${node.name}":`, node.name, 'Rename');
+      if (newName && newName !== node.name) {
+        renameFile(node.id, newName);
       }
     });
 
     const delBtn = row.querySelector('.delete-btn');
-    if (delBtn) delBtn.addEventListener('click', (e) => {
+    if (delBtn) delBtn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      if (confirm(`Delete "${node.name}"${node.type === 'folder' ? ' and all its contents?' : '?'}`)) {
-        deleteFile(node.id);
-      }
+      const msg = node.type === 'folder'
+        ? `Delete "${node.name}" and everything inside it? This cannot be undone.`
+        : `Delete "${node.name}"? This cannot be undone.`;
+      const ok = await Dialog.confirm(msg, 'Delete item?', { okText: 'Delete', danger: true });
+      if (ok) deleteFile(node.id);
     });
 
     els.fileList.appendChild(row);
@@ -397,7 +489,7 @@ async function uploadFiles(fileList, paths = null) {
 
 async function createFolder() {
   if (!can('can_create_folder')) return showToast('No permission to create folders', true);
-  const name = prompt('Folder name:', 'New Folder');
+  const name = await Dialog.prompt('Enter a name for the new folder:', 'New Folder', 'New Folder');
   if (!name || !name.trim()) return;
   try {
     await api(`/api/rooms/${roomId}/folders`, {
@@ -592,9 +684,16 @@ socket.on('files_updated', ({ files }) => {
   renderFiles();
 });
 
-socket.on('room_updated', ({ name }) => {
-  state.room.name = name;
+socket.on('room_updated', ({ name, expiresAt }) => {
+  if (name) state.room.name = name;
+  if (expiresAt) state.room.expiresAt = expiresAt;
   renderHeader();
+});
+
+socket.on('room_deleted', ({ reason }) => {
+  clearInterval(state.expiryInterval);
+  showToast(reason === 'expired' ? 'This room has expired and was deleted' : 'This room was deleted by the owner', true);
+  setTimeout(() => window.location.href = '/', 2000);
 });
 
 socket.on('activity', ({ text }) => {
@@ -623,7 +722,19 @@ els.copyLinkBtn.addEventListener('click', async () => {
     await navigator.clipboard.writeText(link);
     showToast('Invite link copied!');
   } catch(e) {
-    prompt('Copy this link:', link);
+    // Fallback: select text in a temporary textarea so user can copy
+    const ta = document.createElement('textarea');
+    ta.value = link;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); showToast('Invite link copied!'); }
+    catch(_) {
+      // Last resort: custom prompt showing the link
+      await Dialog.alert(link, 'Copy this invite link');
+    }
+    document.body.removeChild(ta);
   }
 });
 
@@ -748,6 +859,21 @@ els.joinNameBtn.addEventListener('click', () => {
 });
 els.joinNameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') els.joinNameBtn.click(); });
 
+// Expiry modal handlers
+els.changeExpiryBtn.addEventListener('click', () => {
+  const hoursLeft = Math.max(1, (state.room.expiresAt - Date.now()) / 3600000);
+  els.expirySelect.value = nearestExpiryOption(hoursLeft);
+  els.expiryModal.style.display = 'flex';
+});
+els.closeExpiryModal.addEventListener('click', () => { els.expiryModal.style.display = 'none'; });
+els.expiryModal.addEventListener('click', (e) => { if (e.target === els.expiryModal) els.expiryModal.style.display = 'none'; });
+els.saveExpiryBtn.addEventListener('click', () => {
+  changeExpiry(Number(els.expirySelect.value));
+});
+
+// Delete room
+els.deleteRoomBtn.addEventListener('click', deleteRoom);
+
 // Mobile sidebar toggle
 els.toggleSidebar.addEventListener('click', () => {
   state.sidebarOpen = !state.sidebarOpen;
@@ -766,21 +892,6 @@ els.toggleSidebar.addEventListener('click', () => {
     els.sidebar.style = '';
   }
 });
-
-// Update expiry timer every minute
-setInterval(() => {
-  if (state.room) {
-    const ms = state.room.expiresAt - Date.now();
-    if (ms <= 0) {
-      showToast('This room has expired', true);
-      setTimeout(() => window.location.href = '/', 2000);
-      return;
-    }
-    const h = Math.floor(ms / 3600000);
-    const m = Math.floor((ms % 3600000) / 60000);
-    els.expiryText.textContent = h > 0 ? `Expires in ${h}h ${m}m` : `Expires in ${m}m`;
-  }
-}, 60000);
 
 // ---------- Init ----------
 async function loadRoom() {
