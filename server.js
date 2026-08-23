@@ -5,6 +5,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const multer = require('multer');
 const cors = require('cors');
+const { ZipArchive } = require('archiver');
 const { Server } = require('socket.io');
 
 const app = express();
@@ -494,6 +495,80 @@ app.get('/api/rooms/:roomId/files/:fileId/download', (req, res) => {
   if (!fs.existsSync(p)) return res.status(404).send('File missing on server');
   res.download(p, node.name);
 });
+
+// Download folder as ZIP (preserves subfolder structure)
+// Usage: GET /api/rooms/:roomId/folders/:folderId/zip?userId=xxx
+// Pass fileId='root' to zip the entire room.
+app.get('/api/rooms/:roomId/folders/:folderId/zip', (req, res) => {
+  const room = getRoom(req.params.roomId);
+  if (!room) return res.status(404).send('Room not found');
+  const userId = req.query.userId;
+  const user = getUser(room, userId);
+  if (!user) return res.status(401).send('Not a member');
+
+  const folderId = req.params.folderId;
+  const folder = room.files.find(f => f.id === folderId && f.type === 'folder');
+  if (!folder) return res.status(404).send('Folder not found');
+
+  // Collect all descendants (files + folders) under this folder.
+  const descendants = new Set();
+  function collect(id) {
+    descendants.add(id);
+    room.files.filter(f => f.parentId === id).forEach(child => collect(child.id));
+  }
+  collect(folderId);
+
+  // Build a map of id -> node for quick lookup, and parent id -> name.
+  const byId = {};
+  room.files.forEach(f => { byId[f.id] = f; });
+
+  // Compute ZIP entry path for each file by walking up to the folder root.
+  // If the downloaded folder is not "root", prefix everything with the folder name.
+  const rootPrefix = folder.id === 'root' ? '' : sanitizeZipName(folder.name) + '/';
+  function zipPathFor(fileNode) {
+    const parts = [];
+    let cur = fileNode;
+    while (cur && cur.id !== folderId) {
+      parts.unshift(sanitizeZipName(cur.name));
+      cur = cur.parentId ? byId[cur.parentId] : null;
+    }
+    return rootPrefix + parts.join('/');
+  }
+
+  const archiveName = (folder.id === 'root' ? (room.name || 'room') : folder.name).replace(/[^\w\- .\u00A0-\uFFFF]/g, '_') || 'download';
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', `attachment; filename="${archiveName}.zip"`);
+
+  const archive = new ZipArchive({ zlib: { level: 6 } });
+  archive.on('error', err => {
+    console.error('ZIP error:', err);
+    try { res.status(500).end(); } catch(e) {}
+  });
+  archive.pipe(res);
+
+  // Add all files under this folder.
+  let anyFile = false;
+  for (const node of room.files) {
+    if (node.type !== 'file' || !descendants.has(node.id)) continue;
+    const diskPath = path.join(UPLOADS_DIR, room.id, node.storageName);
+    if (!fs.existsSync(diskPath)) continue;
+    const entryName = zipPathFor(node);
+    archive.file(diskPath, { name: entryName });
+    anyFile = true;
+  }
+
+  if (!anyFile) {
+    archive.append('This folder is empty.\n', { name: rootPrefix + '(empty).txt' });
+  }
+
+  archive.finalize();
+});
+
+function sanitizeZipName(name) {
+  // Strip characters that are unsafe across OSes, and prevent path traversal.
+  let n = String(name).replace(/[\/\\\?\%\*\:\|"<>\x00-\x1f]/g, '_').replace(/^\.+/, '_');
+  return n.slice(0, 200) || 'file';
+}
 
 // Update user permissions (admin/owner only)
 app.patch('/api/rooms/:roomId/users/:userId/permissions', (req, res) => {

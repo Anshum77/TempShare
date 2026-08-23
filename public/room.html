@@ -58,9 +58,23 @@
 
       <!-- Files panel -->
       <section class="flex-1 flex flex-col min-w-0 border-r border-slate-700/50">
-        <div class="px-4 py-3 bg-slate-800/50 border-b border-slate-700 flex flex-wrap items-center gap-2">
-          <div class="flex items-center gap-1 text-sm flex-1 min-w-0" id="breadcrumb"></div>
-          <div class="flex items-center gap-2">
+        <div class="px-4 py-3 bg-slate-800/50 border-b border-slate-700 flex flex-wrap items-center gap-1">
+          <button id="backBtn" class="p-2 rounded-md hover:bg-slate-700 text-slate-300 hover:text-white transition disabled:opacity-25 disabled:cursor-not-allowed disabled:hover:bg-transparent shrink-0" title="Go to parent folder (Alt+↑ / Backspace)" disabled>
+            <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/>
+            </svg>
+          </button>
+          <button id="homeBtn" class="p-2 rounded-md hover:bg-slate-700 text-slate-400 hover:text-white transition shrink-0" title="Go to root (Alt+H)">
+            <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/>
+            </svg>
+          </button>
+          <div class="flex items-center gap-1 text-sm flex-1 min-w-0 flex-wrap" id="breadcrumb"></div>
+          <div class="flex items-center gap-2 shrink-0">
+            <a id="downloadZipBtn" href="#" class="flex items-center gap-1 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded-md text-sm transition" title="Download current folder as ZIP (preserves subfolder structure)">
+              <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"/></svg>
+              <span class="hidden sm:inline">Download ZIP</span>
+            </a>
             <button id="newFolderBtn" class="flex items-center gap-1 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded-md text-sm transition">
               <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 13h6m-3-3v6M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/></svg>
               New Folder

@@ -37,7 +37,6 @@
   function show({ title, message, kind = 'info', input: withInput = false, defaultValue = '',
                  buttons, inputType = 'text', inputMax = 200 }) {
     if (open) return Promise.reject(new Error('Dialog already open'));
-    open = true;
 
     titleEl.textContent = title || '';
     msgEl.textContent = message || '';
@@ -56,7 +55,38 @@
     const buttonDefs = buttons || [{ text: 'OK', value: true, primary: true }];
     const buttonEls = [];
 
-    buttonDefs.forEach((b, idx) => {
+    // Create resolve FIRST so button handlers can reference a live binding via closure.
+    let resolve;
+    const p = new Promise(res => { resolve = res; });
+
+    function close(val) {
+      if (!open) return; // double-click guard
+      open = false;
+      dlg.classList.add('hidden');
+      dlg.style.display = 'none';
+      document.removeEventListener('keydown', keyHandler, true);
+      dlg.onclick = null;
+      resolve(val);
+    }
+
+    function keyHandler(e) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        const cancel = buttonDefs.find(b => b.value === false || b.value === null);
+        close(cancel ? cancel.value : (buttonDefs[0] && buttonDefs[0].value));
+      } else if (e.key === 'Enter') {
+        // For prompts Enter submits; for confirms/alert Enter submits when a button is focused
+        if (withInput || document.activeElement === input || buttonEls.includes(document.activeElement)) {
+          e.preventDefault();
+          const primary = buttonDefs.find(b => b.primary) || buttonDefs[buttonDefs.length - 1];
+          const val = withInput ? input.value : primary.value;
+          if (withInput && primary.validate && !primary.validate(val)) return;
+          close(withInput ? val : primary.value);
+        }
+      }
+    }
+
+    buttonDefs.forEach((b) => {
       const btn = document.createElement('button');
       btn.textContent = b.text;
       let cls = 'px-4 py-2 rounded-lg text-sm font-semibold transition focus:outline-none focus:ring-2 ';
@@ -68,57 +98,12 @@
         cls += 'bg-slate-700 hover:bg-slate-600 text-slate-100 focus:ring-slate-500';
       }
       btn.className = cls;
-      btn.addEventListener('click', () => resolve(b.value));
+      btn.addEventListener('click', () => close(b.value));
       actions.appendChild(btn);
       buttonEls.push(btn);
     });
 
-    dlg.classList.remove('hidden');
-    dlg.style.display = 'flex';
-
-    // Focus appropriate element
-    setTimeout(() => {
-      if (withInput) {
-        input.focus();
-        input.select();
-      } else if (buttonEls.length) {
-        // Default focus = first "cancel" or last button (primary)
-        const cancel = buttonEls.find(b => b.textContent.trim().toLowerCase() === 'cancel') || buttonEls[buttonEls.length - 1];
-        cancel.focus();
-      }
-    }, 30);
-
-    let resolve;
-    const p = new Promise(res => { resolve = res; });
-
-    function close(val) {
-      open = false;
-      dlg.classList.add('hidden');
-      dlg.style.display = 'none';
-      document.removeEventListener('keydown', keyHandler, true);
-      resolve(val);
-    }
-
-    function keyHandler(e) {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        // cancel = find button whose value is false/null/undefined, else first
-        const cancel = buttonDefs.find(b => b.value === false || b.value === null);
-        close(cancel ? cancel.value : (buttonDefs[0] && buttonDefs[0].value));
-      } else if (e.key === 'Enter') {
-        if (withInput || document.activeElement === input) {
-          e.preventDefault();
-          // primary button
-          const primary = buttonDefs.find(b => b.primary) || buttonDefs[buttonDefs.length - 1];
-          const val = withInput ? input.value : primary.value;
-          if (withInput && primary.validate && !primary.validate(val)) return;
-          close(withInput ? val : primary.value);
-        }
-      }
-    }
-    document.addEventListener('keydown', keyHandler, true);
-
-    // Click on backdrop to cancel (only for confirm/alert, not prompt -- avoids accidental loss)
+    // Click on backdrop to cancel (only for confirm/alert — not prompt, to avoid accidental loss)
     dlg.onclick = (e) => {
       if (e.target === dlg) {
         if (!withInput) {
@@ -127,6 +112,24 @@
         }
       }
     };
+
+    open = true;
+    dlg.classList.remove('hidden');
+    dlg.style.display = 'flex';
+
+    document.addEventListener('keydown', keyHandler, true);
+
+    // Focus appropriate element after dialog is visible
+    setTimeout(() => {
+      if (withInput) {
+        input.focus();
+        input.select();
+      } else if (buttonEls.length) {
+        // Default focus = first "cancel" button (least destructive), else primary
+        const cancel = buttonEls.find(b => b.value === false || b.value === null) || buttonEls[buttonEls.length - 1];
+        cancel.focus();
+      }
+    }, 30);
 
     return p;
   }

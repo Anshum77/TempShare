@@ -32,6 +32,9 @@ const els = {
   userCount: document.getElementById('userCount'),
   myInfo: document.getElementById('myInfo'),
   breadcrumb: document.getElementById('breadcrumb'),
+  backBtn: document.getElementById('backBtn'),
+  homeBtn: document.getElementById('homeBtn'),
+  downloadZipBtn: document.getElementById('downloadZipBtn'),
   fileList: document.getElementById('fileList'),
   emptyFiles: document.getElementById('emptyFiles'),
   newFolderBtn: document.getElementById('newFolderBtn'),
@@ -180,20 +183,117 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
-function getFileIcon(node) {
-  if (node.type === 'folder') return '📁';
-  const ext = (node.name.split('.').pop() || '').toLowerCase();
-  const iconMap = {
-    pdf: '📄', doc: '📝', docx: '📝', txt: '📃', md: '📃',
-    jpg: '🖼️', jpeg: '🖼️', png: '🖼️', gif: '🖼️', webp: '🖼️', svg: '🖼️',
-    mp4: '🎬', mov: '🎬', avi: '🎬', mkv: '🎬', webm: '🎬',
-    mp3: '🎵', wav: '🎵', ogg: '🎵', flac: '🎵', m4a: '🎵',
-    zip: '🗜️', rar: '🗜️', '7z': '🗜️', tar: '🗜️', gz: '🗜️',
-    js: '📜', ts: '📜', jsx: '📜', tsx: '📜', html: '📜', css: '📜', py: '📜', java: '📜', c: '📜', cpp: '📜',
-    json: '📋', csv: '📊', xlsx: '📊', xls: '📊', pptx: '📽️', ppt: '📽️',
-    exe: '⚙️', sh: '⚙️', bin: '⚙️'
-  };
-  return iconMap[ext] || '📎';
+// ---------- File-type icons ----------
+// Returns an HTML string: colored rounded tile with short extension label + generic fallback.
+const ICON_STYLES = {
+  // media
+  image:    { bg: '#a78bfa', fg: '#1e1b4b', label: 'IMG' },
+  video:    { bg: '#f472b6', fg: '#500724', label: 'VID' },
+  audio:    { bg: '#34d399', fg: '#064e3b', label: 'AUD' },
+  // documents
+  pdf:      { bg: '#ef4444', fg: '#fff',    label: 'PDF' },
+  doc:      { bg: '#3b82f6', fg: '#fff',    label: 'DOC' },
+  docx:     { bg: '#2563eb', fg: '#fff',    label: 'DOCX' },
+  word:     { bg: '#2563eb', fg: '#fff',    label: 'DOC' },
+  xls:      { bg: '#10b981', fg: '#fff',    label: 'XLS' },
+  xlsx:     { bg: '#059669', fg: '#fff',    label: 'XLSX' },
+  csv:      { bg: '#84cc16', fg: '#1a2e05', label: 'CSV' },
+  ppt:      { bg: '#f97316', fg: '#fff',    label: 'PPT' },
+  pptx:     { bg: '#ea580c', fg: '#fff',    label: 'PPTX' },
+  txt:      { bg: '#94a3b8', fg: '#0f172a', label: 'TXT' },
+  md:       { bg: '#64748b', fg: '#fff',    label: 'MD' },
+  rtf:      { bg: '#94a3b8', fg: '#0f172a', label: 'RTF' },
+  // code
+  js:       { bg: '#fde047', fg: '#713f12', label: 'JS'  },
+  mjs:      { bg: '#fde047', fg: '#713f12', label: 'MJS' },
+  cjs:      { bg: '#fde047', fg: '#713f12', label: 'CJS' },
+  ts:       { bg: '#3b82f6', fg: '#fff',    label: 'TS'  },
+  jsx:      { bg: '#60a5fa', fg: '#1e3a8a', label: 'JSX' },
+  tsx:      { bg: '#38bdf8', fg: '#0c4a6e', label: 'TSX' },
+  html:     { bg: '#fb923c', fg: '#431407', label: 'HTML' },
+  htm:      { bg: '#fb923c', fg: '#431407', label: 'HTM' },
+  css:      { bg: '#6366f1', fg: '#fff',    label: 'CSS' },
+  scss:     { bg: '#ec4899', fg: '#fff',    label: 'SCSS' },
+  sass:     { bg: '#ec4899', fg: '#fff',    label: 'SASS' },
+  less:     { bg: '#2563eb', fg: '#fff',    label: 'LESS' },
+  json:     { bg: '#fbbf24', fg: '#78350f', label: 'JSON' },
+  xml:      { bg: '#f59e0b', fg: '#78350f', label: 'XML' },
+  yaml:     { bg: '#a3a3a3', fg: '#111',    label: 'YML' },
+  yml:      { bg: '#a3a3a3', fg: '#111',    label: 'YML' },
+  py:       { bg: '#0ea5e9', fg: '#fff',    label: 'PY'  },
+  java:     { bg: '#dc2626', fg: '#fff',    label: 'JAVA' },
+  c:        { bg: '#0284c7', fg: '#fff',    label: 'C'   },
+  cpp:      { bg: '#0284c7', fg: '#fff',    label: 'C++' },
+  cc:       { bg: '#0284c7', fg: '#fff',    label: 'C++' },
+  cxx:      { bg: '#0284c7', fg: '#fff',    label: 'C++' },
+  h:        { bg: '#0ea5e9', fg: '#fff',    label: 'H'   },
+  hpp:      { bg: '#0ea5e9', fg: '#fff',    label: 'HPP' },
+  cs:       { bg: '#7c3aed', fg: '#fff',    label: 'C#'  },
+  go:       { bg: '#67e8f9', fg: '#083344', label: 'GO'  },
+  rs:       { bg: '#f97316', fg: '#fff',    label: 'RS'  },
+  rb:       { bg: '#dc2626', fg: '#fff',    label: 'RB'  },
+  php:      { bg: '#a855f7', fg: '#fff',    label: 'PHP' },
+  swift:    { bg: '#f97316', fg: '#fff',    label: 'SW'  },
+  kt:       { bg: '#a855f7', fg: '#fff',    label: 'KT'  },
+  sh:       { bg: '#14b8a6', fg: '#042f2e', label: 'SH'  },
+  bash:     { bg: '#14b8a6', fg: '#042f2e', label: 'BASH' },
+  zsh:      { bg: '#14b8a6', fg: '#042f2e', label: 'ZSH' },
+  bat:      { bg: '#475569', fg: '#fff',    label: 'BAT' },
+  ps1:      { bg: '#2563eb', fg: '#fff',    label: 'PS1' },
+  sql:      { bg: '#0891b2', fg: '#fff',    label: 'SQL' },
+  vue:      { bg: '#22c55e', fg: '#052e16', label: 'VUE' },
+  svelte:   { bg: '#f97316', fg: '#fff',    label: 'SVL' },
+  // archives
+  zip:      { bg: '#a16207', fg: '#fef3c7', label: 'ZIP' },
+  rar:      { bg: '#a16207', fg: '#fef3c7', label: 'RAR' },
+  '7z':     { bg: '#a16207', fg: '#fef3c7', label: '7Z'  },
+  tar:      { bg: '#a16207', fg: '#fef3c7', label: 'TAR' },
+  gz:       { bg: '#854d0e', fg: '#fef3c7', label: 'GZ'  },
+  bz2:      { bg: '#854d0e', fg: '#fef3c7', label: 'BZ2' },
+  xz:       { bg: '#854d0e', fg: '#fef3c7', label: 'XZ'  },
+  // executables / binaries
+  exe:      { bg: '#475569', fg: '#fff',    label: 'EXE' },
+  msi:      { bg: '#475569', fg: '#fff',    label: 'MSI' },
+  dll:      { bg: '#334155', fg: '#fff',    label: 'DLL' },
+  bin:      { bg: '#1e293b', fg: '#cbd5e1', label: 'BIN' },
+  // fonts
+  ttf:      { bg: '#db2777', fg: '#fff',    label: 'TTF' },
+  otf:      { bg: '#db2777', fg: '#fff',    label: 'OTF' },
+  woff:     { bg: '#be185d', fg: '#fff',    label: 'WOFF' },
+  woff2:    { bg: '#be185d', fg: '#fff',    label: 'WOFF2' },
+  // other
+  iso:      { bg: '#64748b', fg: '#fff',    label: 'ISO' },
+  dmg:      { bg: '#64748b', fg: '#fff',    label: 'DMG' }
+};
+
+const IMAGE_EXTS = new Set(['png','jpg','jpeg','gif','webp','svg','bmp','ico','tiff','tif','avif','heic','heif']);
+const VIDEO_EXTS = new Set(['mp4','mov','avi','mkv','webm','flv','wmv','m4v','mpg','mpeg','3gp']);
+const AUDIO_EXTS = new Set(['mp3','wav','ogg','flac','m4a','aac','wma','aiff','opus']);
+const CODE_EXTS = new Set(['js','mjs','cjs','ts','jsx','tsx','html','htm','css','scss','sass','less','json','xml','yaml','yml','py','java','c','cpp','cc','cxx','h','hpp','cs','go','rs','rb','php','swift','kt','sh','bash','zsh','bat','ps1','sql','vue','svelte']);
+const DOC_EXTS = new Set(['pdf','doc','docx','xls','xlsx','csv','ppt','pptx','txt','md','rtf']);
+const ARCHIVE_EXTS = new Set(['zip','rar','7z','tar','gz','bz2','xz']);
+
+function iconInfoFor(name) {
+  const dot = name.lastIndexOf('.');
+  const ext = (dot >= 0 ? name.slice(dot+1).toLowerCase() : '').trim();
+  if (!ext) return ICON_STYLES.bin || { bg: '#475569', fg: '#fff', label: 'FILE' };
+  if (IMAGE_EXTS.has(ext)) return { ...ICON_STYLES.image, label: ext.slice(0,4).toUpperCase() };
+  if (VIDEO_EXTS.has(ext)) return { ...ICON_STYLES.video, label: ext.slice(0,4).toUpperCase() };
+  if (AUDIO_EXTS.has(ext)) return { ...ICON_STYLES.audio, label: ext.slice(0,3).toUpperCase() };
+  if (ICON_STYLES[ext]) return ICON_STYLES[ext];
+  // Generic fallback: first 3-4 chars of extension
+  return { bg: '#475569', fg: '#f1f5f9', label: ext.slice(0,4).toUpperCase() };
+}
+
+function fileIconHTML(name) {
+  const info = iconInfoFor(name);
+  const label = escapeHtml(info.label);
+  // Use inline styles so tailwind config doesn't need extension; font slightly condensed.
+  return `<span class="inline-flex items-center justify-center rounded-md font-bold text-[10px] tracking-tight" style="background:${info.bg};color:${info.fg};min-width:34px;height:28px;padding:0 6px;">${label}</span>`;
+}
+
+function folderIconHTML() {
+  return `<span class="inline-flex items-center justify-center w-8 h-7 text-yellow-400 text-xl leading-none">📁</span>`;
 }
 
 function me() {
@@ -289,23 +389,52 @@ function buildFolderPath(folderId) {
   return path;
 }
 
+function navigateTo(folderId) {
+  if (!state.room) return;
+  const folder = state.room.files.find(f => f.id === folderId && f.type === 'folder');
+  if (!folder) return;
+  state.currentFolder = folderId;
+  renderFiles();
+}
+
+function navigateUp() {
+  if (!state.room) return;
+  const cur = state.room.files.find(f => f.id === state.currentFolder);
+  if (!cur || !cur.parentId) return; // at root
+  state.currentFolder = cur.parentId;
+  renderFiles();
+}
+
+function navigateToRoot() {
+  if (!state.room) return;
+  state.currentFolder = 'root';
+  renderFiles();
+}
+
 function renderBreadcrumb() {
   state.folderPath = buildFolderPath(state.currentFolder);
   els.breadcrumb.innerHTML = '';
   state.folderPath.forEach((f, i) => {
     const isLast = i === state.folderPath.length - 1;
     const btn = document.createElement('button');
-    btn.className = 'px-2 py-1 rounded hover:bg-slate-700 transition ' + (isLast ? 'text-white font-semibold' : 'text-slate-400');
+    btn.className = 'px-2 py-1 rounded hover:bg-slate-700 transition truncate max-w-[200px] ' + (isLast ? 'text-white font-semibold cursor-default' : 'text-slate-400 hover:text-slate-200');
     btn.textContent = i === 0 ? '📁 Root' : '📁 ' + f.name;
-    if (!isLast) btn.addEventListener('click', () => { state.currentFolder = f.id; renderFiles(); });
+    btn.title = i === 0 ? 'Root' : f.name;
+    if (!isLast) {
+      btn.addEventListener('click', () => navigateTo(f.id));
+    }
     els.breadcrumb.appendChild(btn);
     if (!isLast) {
       const sep = document.createElement('span');
-      sep.className = 'text-slate-600';
+      sep.className = 'text-slate-600 mx-0.5';
       sep.textContent = '/';
       els.breadcrumb.appendChild(sep);
     }
   });
+  // Update back button state
+  const atRoot = state.currentFolder === 'root';
+  els.backBtn.disabled = atRoot;
+  els.backBtn.title = atRoot ? 'Already at root' : 'Go to parent folder (Backspace / Alt+↑)';
 }
 
 function renderFiles() {
@@ -332,8 +461,11 @@ function renderFiles() {
     const uploader = node.uploadedByName || node.createdByName || '';
     const date = node.uploadedAt || node.createdAt;
 
+    const isFolder = node.type === 'folder';
+    const iconHTML = isFolder ? folderIconHTML() : fileIconHTML(node.name);
+
     row.innerHTML = `
-      <div class="text-2xl w-8 text-center">${getFileIcon(node)}</div>
+      <div class="w-9 flex items-center justify-center shrink-0">${iconHTML}</div>
       <div class="flex-1 min-w-0">
         <div class="font-medium text-sm truncate cursor-pointer file-name">${escapeHtml(node.name)}</div>
         <div class="text-xs text-slate-500 flex items-center gap-2">
@@ -342,23 +474,44 @@ function renderFiles() {
           ${date ? `<span>· ${timeAgo(date)}</span>` : ''}
         </div>
       </div>
-      <div class="opacity-0 group-hover:opacity-100 transition flex items-center gap-1">
-        ${node.type === 'file' ? `<a href="/api/rooms/${state.room.id}/files/${node.id}/download?userId=${state.userId}" download class="p-2 hover:bg-slate-700 rounded" title="Download"><svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg></a>` : ''}
-        ${canRename ? `<button class="rename-btn p-2 hover:bg-slate-700 rounded" title="Rename"><svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg></button>` : ''}
-        ${canDelete && node.id !== 'root' ? `<button class="delete-btn p-2 hover:bg-red-600/30 text-red-400 rounded" title="Delete"><svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6M1 7h22M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3"/></svg></button>` : ''}
+      <div class="opacity-0 group-hover:opacity-100 transition flex items-center gap-1 shrink-0">
+        ${isFolder
+          ? `<a href="/api/rooms/${state.room.id}/folders/${node.id}/zip?userId=${state.userId}" class="p-2 hover:bg-slate-700 rounded" title="Download folder as ZIP" download>
+               <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"/></svg>
+             </a>`
+          : `<a href="/api/rooms/${state.room.id}/files/${node.id}/download?userId=${state.userId}" download class="p-2 hover:bg-slate-700 rounded" title="Download">
+               <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+             </a>`
+        }
+        ${canRename ? `<button class="rename-btn p-2 hover:bg-slate-700 rounded" title="Rename">
+             <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+           </button>` : ''}
+        ${canDelete && node.id !== 'root' ? `<button class="delete-btn p-2 hover:bg-red-600/30 text-red-400 rounded" title="Delete">
+             <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6M1 7h22M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3"/></svg>
+           </button>` : ''}
       </div>
     `;
 
     const nameEl = row.querySelector('.file-name');
-    nameEl.addEventListener('click', () => {
+    const openNode = () => {
       if (node.type === 'folder') {
-        state.currentFolder = node.id;
-        renderFiles();
+        navigateTo(node.id);
       } else {
-        // Download on click (simple UX)
         window.open(`/api/rooms/${state.room.id}/files/${node.id}/download?userId=${state.userId}`, '_blank');
       }
-    });
+    };
+    nameEl.addEventListener('click', openNode);
+    // Make the whole row clickable for folders
+    if (isFolder) {
+      row.classList.add('cursor-pointer');
+      row.addEventListener('click', (e) => {
+        if (e.target.closest('button') || e.target.closest('a')) return;
+        openNode();
+      });
+      row.addEventListener('dblclick', openNode);
+    } else {
+      row.addEventListener('dblclick', openNode);
+    }
 
     const renameBtn = row.querySelector('.rename-btn');
     if (renameBtn) renameBtn.addEventListener('click', async (e) => {
@@ -372,7 +525,7 @@ function renderFiles() {
     const delBtn = row.querySelector('.delete-btn');
     if (delBtn) delBtn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      const msg = node.type === 'folder'
+      const msg = isFolder
         ? `Delete "${node.name}" and everything inside it? This cannot be undone.`
         : `Delete "${node.name}"? This cannot be undone.`;
       const ok = await Dialog.confirm(msg, 'Delete item?', { okText: 'Delete', danger: true });
@@ -968,6 +1121,49 @@ els.saveExpiryBtn.addEventListener('click', () => {
 
 // Delete room
 els.deleteRoomBtn.addEventListener('click', deleteRoom);
+
+// Navigation: back to parent, go to root
+els.backBtn.addEventListener('click', navigateUp);
+els.homeBtn.addEventListener('click', navigateToRoot);
+
+// Download current folder as ZIP
+els.downloadZipBtn.addEventListener('click', (e) => {
+  e.preventDefault();
+  if (!state.room) return;
+  const folderId = state.currentFolder || 'root';
+  const url = `/api/rooms/${roomId}/folders/${folderId}/zip?userId=${state.userId}`;
+  // Use a temp anchor so the browser treats it as a download, and a new tab
+  // won't flash (better than window.open).
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = '';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  showToast('Preparing ZIP download…');
+});
+
+// Keyboard shortcuts for file navigation (only when NOT typing in an input)
+document.addEventListener('keydown', (e) => {
+  // Don't hijack keys while typing
+  const tag = (e.target && e.target.tagName) || '';
+  const isTyping = tag === 'INPUT' || tag === 'TEXTAREA' || e.target.isContentEditable;
+  if (isTyping) return;
+  // Don't trigger while a dialog is open
+  const dialogOpen = document.getElementById('dialog')?.style?.display === 'flex'
+                  || els.permModal?.style?.display === 'flex'
+                  || els.expiryModal?.style?.display === 'flex'
+                  || els.nameModal?.style?.display === 'flex';
+  if (dialogOpen) return;
+
+  if (e.key === 'Backspace' || (e.altKey && e.key === 'ArrowUp')) {
+    e.preventDefault();
+    navigateUp();
+  } else if (e.key === 'Home' || (e.altKey && (e.key === 'h' || e.key === 'H'))) {
+    e.preventDefault();
+    navigateToRoot();
+  }
+});
 
 // Mobile sidebar toggle
 els.toggleSidebar.addEventListener('click', () => {
