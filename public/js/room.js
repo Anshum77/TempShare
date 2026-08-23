@@ -386,20 +386,55 @@ function renderFiles() {
 function renderMessages() {
   const wasAtBottom = els.messages.scrollHeight - els.messages.scrollTop - els.messages.clientHeight < 80;
   els.messages.innerHTML = '';
+  const myRole = me() && me().role;
+  const myId = state.userId;
+
   for (const msg of state.room.messages) {
     const isMe = msg.userId === state.userId;
+    // Delete permission: own message, or owner (always), or admin deleting a member's message
+    const author = state.room.users.find(u => u.id === msg.userId);
+    const authorRole = author ? author.role : 'member';
+    const canDelete = isMe || myRole === 'owner' || (myRole === 'admin' && authorRole === 'member');
+
     const wrapper = document.createElement('div');
-    wrapper.className = 'flex fade-in ' + (isMe ? 'justify-end' : 'justify-start');
+    wrapper.className = 'flex fade-in group/message relative ' + (isMe ? 'justify-end' : 'justify-start');
     wrapper.innerHTML = `
       <div class="max-w-[80%] ${isMe ? 'items-end' : 'items-start'} flex flex-col">
         ${!isMe ? `<span class="text-[11px] text-slate-500 mb-0.5 ml-2">${escapeHtml(msg.userName)}${msg.role !== 'member' ? ' <span class="text-pink-400 font-semibold">('+msg.role.toUpperCase()+')</span>' : ''} · ${formatTime(msg.ts)}</span>` : ''}
-        <div class="${isMe ? 'bubble-me' : 'bubble-other'} px-3 py-2 text-sm shadow break-words">${escapeHtml(msg.text)}</div>
+        <div class="relative flex items-center gap-1 ${isMe ? 'flex-row-reverse' : ''}">
+          <div class="${isMe ? 'bubble-me' : 'bubble-other'} px-3 py-2 text-sm shadow break-words">${escapeHtml(msg.text)}</div>
+          ${canDelete ? `<button data-msg-id="${msg.id}" class="msg-del opacity-0 group-hover/message:opacity-100 transition p-1.5 rounded-full hover:bg-red-600/20 text-red-400 shrink-0" title="Delete message">
+            <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6M1 7h22M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3"/></svg>
+          </button>` : ''}
+        </div>
         ${isMe ? `<span class="text-[11px] text-slate-500 mt-0.5 mr-2">${formatTime(msg.ts)}</span>` : ''}
       </div>
     `;
+    const delBtn = wrapper.querySelector('.msg-del');
+    if (delBtn) {
+      delBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const ok = await Dialog.confirm(
+          isMe ? 'Unsend this message? It will be removed for everyone.'
+               : 'Delete this message for everyone?',
+          'Delete message?',
+          { okText: 'Delete', danger: true }
+        );
+        if (ok) deleteMessage(msg.id);
+      });
+    }
     els.messages.appendChild(wrapper);
   }
   if (wasAtBottom) els.messages.scrollTop = els.messages.scrollHeight;
+}
+
+async function deleteMessage(msgId) {
+  try {
+    await api(`/api/rooms/${roomId}/messages/${msgId}?userId=${state.userId}`, { method: 'DELETE' });
+    // Optimistically remove locally; realtime event will sync for others
+    state.room.messages = state.room.messages.filter(m => m.id !== msgId);
+    renderMessages();
+  } catch(e) { showToast(e.message, true); }
 }
 
 function updateChatPermission() {
@@ -452,10 +487,10 @@ async function joinRoom(name) {
   }
 }
 
-async function uploadFiles(fileList, paths = null) {
+async function uploadFiles(fileList, paths = null, folderPaths = null) {
   if (!can('can_upload')) return showToast('No upload permission', true);
   const files = Array.from(fileList);
-  if (files.length === 0) return;
+  if (files.length === 0 && (!folderPaths || folderPaths.length === 0)) return;
   const fd = new FormData();
   files.forEach(f => fd.append('files', f));
   fd.append('userId', state.userId);
@@ -463,8 +498,11 @@ async function uploadFiles(fileList, paths = null) {
   if (paths && paths.length === files.length) {
     fd.append('paths', JSON.stringify(paths));
   }
+  if (folderPaths && folderPaths.length) {
+    fd.append('folderPaths', JSON.stringify(folderPaths));
+  }
   const totalSize = files.reduce((s, f) => s + f.size, 0);
-  const folderMsg = paths ? ` (${new Set(paths.map(p => p.split('/').slice(0,-1).join('/')).filter(Boolean)).size} folders)` : '';
+  const folderMsg = folderPaths && folderPaths.length ? ` (${folderPaths.length} folder(s))` : '';
   showToast(`Uploading ${files.length} file(s)${folderMsg} — ${formatSize(totalSize)}`);
   try {
     const xhr = new XMLHttpRequest();
@@ -481,7 +519,6 @@ async function uploadFiles(fileList, paths = null) {
       xhr.send(fd);
     });
     showToast(`Uploaded ${files.length} file(s)${folderMsg} successfully`);
-    // files_updated event will refresh the list
   } catch(e) {
     showToast('Upload failed: ' + e.message, true);
   }
@@ -690,6 +727,12 @@ socket.on('room_updated', ({ name, expiresAt }) => {
   renderHeader();
 });
 
+socket.on('message_deleted', ({ messageId }) => {
+  const before = state.room.messages.length;
+  state.room.messages = state.room.messages.filter(m => m.id !== messageId);
+  if (state.room.messages.length !== before) renderMessages();
+});
+
 socket.on('room_deleted', ({ reason }) => {
   clearInterval(state.expiryInterval);
   showToast(reason === 'expired' ? 'This room has expired and was deleted' : 'This room was deleted by the owner', true);
@@ -745,64 +788,112 @@ els.fileInput.addEventListener('change', (e) => {
   e.target.value = '';
 });
 
+els.folderInput.addEventListener('click', async (e) => {
+  // Prefer File System Access API (supports empty folders) where available
+  if (window.showDirectoryPicker) {
+    e.preventDefault();
+    try {
+      const dirHandle = await window.showDirectoryPicker();
+      const { files, folderPaths } = await readDirHandle(dirHandle, dirHandle.name);
+      const paths = files.map(f => f.relPath);
+      await uploadFiles(files, paths, folderPaths);
+    } catch(err) {
+      // User cancelled — ignore
+    }
+  }
+  // else let the native webkitdirectory picker open (the change handler below will run)
+});
+
 els.folderInput.addEventListener('change', (e) => {
-  // When using webkitdirectory, the browser provides `webkitRelativePath` on each File
+  // Fallback for browsers without showDirectoryPicker (webkitdirectory).
+  // NOTE: This does NOT include empty folders (browser limitation).
   const files = Array.from(e.target.files || []);
   const paths = files.map(f => f.webkitRelativePath || f.name);
-  uploadFiles(files, paths);
+  // Heuristic: collect unique parent directories from paths so non-empty
+  // intermediate folders are still created; truly empty folders are missed.
+  const folderPaths = new Set();
+  for (const p of paths) {
+    const parts = p.split('/');
+    for (let i = 1; i < parts.length; i++) folderPaths.add(parts.slice(0, i).join('/'));
+  }
+  uploadFiles(files, paths, [...folderPaths]);
   e.target.value = '';
 });
 
-// ---------- Drag-and-drop (files + folders) ----------
-// Recursively read dropped items so folders preserve structure.
+// ---------- Drag-and-drop (files + folders, empty folders included) ----------
+// Recursively read dropped items. Returns { files: File[], folderPaths: string[] }
+// so empty directories are preserved.
 function readEntry(entry, pathPrefix = '') {
   return new Promise((resolve) => {
     if (entry.isFile) {
       entry.file(file => {
-        // Attach relative path for our upload handler
         Object.defineProperty(file, 'relPath', { value: pathPrefix + file.name });
-        resolve([file]);
-      }, () => resolve([]));
+        resolve({ files: [file], folderPaths: pathPrefix ? [pathPrefix.replace(/\/$/, '')] : [] });
+      }, () => resolve({ files: [], folderPaths: [] }));
     } else if (entry.isDirectory) {
+      const dirPath = pathPrefix + entry.name;
       const reader = entry.createReader();
       const allEntries = [];
       const readBatch = () => {
         reader.readEntries(async (batch) => {
           if (batch.length === 0) {
-            const results = [];
+            const files = [];
+            const folders = [dirPath]; // this directory itself (even if empty)
             for (const child of allEntries) {
-              const childFiles = await readEntry(child, pathPrefix + entry.name + '/');
-              results.push(...childFiles);
+              const got = await readEntry(child, dirPath + '/');
+              files.push(...got.files);
+              folders.push(...got.folderPaths);
             }
-            resolve(results);
+            resolve({ files, folderPaths: folders });
           } else {
             allEntries.push(...batch);
             readBatch();
           }
-        }, () => resolve([]));
+        }, () => resolve({ files: [], folderPaths: [dirPath] }));
       };
       readBatch();
     } else {
-      resolve([]);
+      resolve({ files: [], folderPaths: [] });
     }
   });
 }
 
 async function getDroppedFiles(dt) {
   const items = dt.items;
-  // If we have DataTransferItemList with webkitGetAsEntry, use it (handles folders)
   if (items && items.length && items[0].webkitGetAsEntry) {
     const files = [];
+    const folderPaths = [];
     for (let i = 0; i < items.length; i++) {
       const entry = items[i].webkitGetAsEntry();
       if (!entry) continue;
       const got = await readEntry(entry, '');
-      files.push(...got);
+      files.push(...got.files);
+      folderPaths.push(...got.folderPaths);
     }
-    return files;
+    return { files, folderPaths: [...new Set(folderPaths)] };
   }
-  // Fallback: plain files list (no structure info)
-  return Array.from(dt.files || []);
+  return { files: Array.from(dt.files || []), folderPaths: [] };
+}
+
+// Recursively read a FileSystemDirectoryHandle (modern File System Access API),
+// which DOES include empty directories.
+async function readDirHandle(dirHandle, baseName) {
+  const files = [];
+  const folderPaths = [];
+  async function walk(handle, path) {
+    if (handle.kind === 'file') {
+      const file = await handle.getFile();
+      Object.defineProperty(file, 'relPath', { value: path });
+      files.push(file);
+    } else if (handle.kind === 'directory') {
+      folderPaths.push(path);
+      for await (const [name, child] of handle.entries()) {
+        await walk(child, path ? path + '/' + name : name);
+      }
+    }
+  }
+  await walk(dirHandle, baseName);
+  return { files, folderPaths };
 }
 
 // Drag & drop
@@ -819,11 +910,15 @@ async function getDroppedFiles(dt) {
   });
 });
 els.dropZone.addEventListener('drop', async (e) => {
-  const dropped = await getDroppedFiles(e.dataTransfer);
-  if (dropped.length) {
+  const { files: dropped, folderPaths } = await getDroppedFiles(e.dataTransfer);
+  if (dropped.length || (folderPaths && folderPaths.length)) {
     const paths = dropped.map(f => f.relPath || f.name);
     const hasFolderStructure = dropped.some(f => f.relPath && f.relPath.includes('/'));
-    uploadFiles(dropped, hasFolderStructure ? paths : null);
+    uploadFiles(
+      dropped,
+      hasFolderStructure ? paths : null,
+      folderPaths && folderPaths.length ? folderPaths : null
+    );
   }
 });
 

@@ -337,6 +337,29 @@ app.post('/api/rooms/:roomId/upload', upload.array('files', 500), (req, res) => 
   const added = [];
   const foldersCreatedBefore = room.files.filter(f => f.type === 'folder').length;
 
+  // --- Ensure any explicitly requested folders exist (supports empty folder uploads) ---
+  let folderPaths = [];
+  if (req.body.folderPaths) {
+    try { folderPaths = JSON.parse(req.body.folderPaths); } catch (e) { folderPaths = []; }
+  }
+  if (!Array.isArray(folderPaths)) folderPaths = [];
+  // Also infer folder-only paths from the `paths` array (dirs with no files)
+  const inferredDirs = new Set();
+  for (const p of paths) {
+    if (typeof p !== 'string') continue;
+    const normalized = p.replace(/\\/g, '/');
+    const parts = normalized.split('/').filter(Boolean);
+    for (let i = 1; i < parts.length; i++) {
+      inferredDirs.add(parts.slice(0, i).join('/'));
+    }
+  }
+  for (const fp of folderPaths) {
+    if (typeof fp === 'string' && fp.trim()) ensureFolderPath(room, userId, fp.trim(), parentId);
+  }
+  for (const dir of inferredDirs) {
+    ensureFolderPath(room, userId, dir, parentId);
+  }
+
   for (let i = 0; i < (req.files || []).length; i++) {
     const f = req.files[i];
     const relPath = paths[i]; // may be undefined
@@ -578,6 +601,37 @@ app.delete('/api/rooms/:roomId', (req, res) => {
   io.to('room:' + roomId).socketsLeave('room:' + roomId);
   deleteRoom(roomId);
   saveRooms();
+  res.json({ ok: true });
+});
+
+// ---------- Chat: delete (unsend) message ----------
+// Rules:
+//  - A user can delete their own messages (unsend)
+//  - Owner can delete any message
+//  - Admins can delete messages by members (but not owner messages, not other admins' messages)
+app.delete('/api/rooms/:roomId/messages/:msgId', (req, res) => {
+  const room = getRoom(req.params.roomId);
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+  const userId = req.body.userId || req.query.userId;
+  const actor = getUser(room, userId);
+  if (!actor) return res.status(401).json({ error: 'Not a member' });
+
+  const msgIdx = room.messages.findIndex(m => m.id === req.params.msgId);
+  if (msgIdx === -1) return res.status(404).json({ error: 'Message not found' });
+  const msg = room.messages[msgIdx];
+
+  let allowed = false;
+  if (actor.role === 'owner') allowed = true;
+  else if (msg.userId === userId) allowed = true;
+  else if (actor.role === 'admin') {
+    const author = getUser(room, msg.userId);
+    if (author && author.role === 'member') allowed = true;
+  }
+  if (!allowed) return res.status(403).json({ error: 'You cannot delete this message' });
+
+  room.messages.splice(msgIdx, 1);
+  saveRooms();
+  broadcastRoom(room.id, 'message_deleted', { messageId: msg.id, deletedBy: userId });
   res.json({ ok: true });
 });
 

@@ -37,6 +37,9 @@
 .file-item:hover { background: rgba(148,163,184,0.08); }
 .file-item.selected { background: rgba(236,72,153,0.15); }
 
+/* Chat message delete button appears on hover */
+.group-hover\/message:opacity-100 { opacity: 1 !important; }
+
 /* Toast animation */
 #toast.show { animation: toastIn 0.2s ease-out; }
 @keyframes toastIn {
