@@ -30,7 +30,6 @@ const els = {
   deleteRoomBtn: document.getElementById('deleteRoomBtn'),
   leaveRoomBtn: document.getElementById('leaveRoomBtn'),
   clearChatBtn: document.getElementById('clearChatBtn'),
-  clearChatHeaderBtn: document.getElementById('clearChatHeaderBtn'),
   copyLinkBtn: document.getElementById('copyLinkBtn'),
   toggleSidebar: document.getElementById('toggleSidebar'),
   sidebar: document.getElementById('sidebar'),
@@ -407,10 +406,6 @@ function renderHeader() {
   if (els.clearChatBtn) {
     els.clearChatBtn.classList.toggle('hidden', !isOwner);
     els.clearChatBtn.classList.toggle('flex', isOwner);
-  }
-  if (els.clearChatHeaderBtn) {
-    els.clearChatHeaderBtn.classList.toggle('hidden', !isOwner);
-    els.clearChatHeaderBtn.classList.toggle('flex', isOwner);
   }
   els.expiryBadge.classList.remove('hidden');
   els.expiryBadge.classList.add('flex');
@@ -1440,7 +1435,6 @@ els.saveExpiryBtn.addEventListener('click', () => {
 els.deleteRoomBtn.addEventListener('click', deleteRoom);
 els.leaveRoomBtn.addEventListener('click', leaveRoom);
 if (els.clearChatBtn) els.clearChatBtn.addEventListener('click', clearChat);
-if (els.clearChatHeaderBtn) els.clearChatHeaderBtn.addEventListener('click', clearChat);
 if (els.closePermModal) els.closePermModal.addEventListener('click', closePermModalFn);
 if (els.permModal) els.permModal.addEventListener('click', (e) => { if (e.target === els.permModal) closePermModalFn(); });
 
