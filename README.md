@@ -3,27 +3,29 @@
 > **Temporary, link-based collaborative workspaces.**
 > Share files, organize folders, and chat — all in one ephemeral room. No signup. No install.
 
-Inspired by a mix of Google Drive + WhatsApp + Discord, but ephemeral and link-based. Anyone you share the link with can join instantly. The owner (and promoted admins) control who can chat, upload, delete, and manage folders.
+Inspired by a mix of Google Drive + WhatsApp + Discord, but ephemeral and link-based. Anyone you share the link with can *request* to join. The owner admits them from a waiting room. Once inside, everyone can download files; only the owner has full administrative control.
 
 ---
 
 ## ✨ Features
 
 - 🔗 **One-click room creation** — click "Create a Room", get a shareable link instantly.
-- 👥 **Join by link** — no accounts, no passwords (display name only).
-- 📁 **File & folder sharing** — upload files or entire folders (subfolder structure preserved), create folders, organize together.
+- 🚪 **Owner waiting room** — people who open the invite sit in a waiting room until the owner admits or declines them.
+- 👥 **Two roles only**
+  - **Owner** — full administrative control (admit/deny, rename room, change expiry, delete files/folders, delete the room).
+  - **Member** — chat, upload, and download. Cannot delete, rename, or create folders.
+- 📁 **File & folder sharing** — upload files or entire folders (subfolder structure preserved).
 - 📤 **Drag & drop uploads** — drop files *or* entire folders anywhere in the file panel; subfolders are recreated exactly.
+- ⬇️ **Downloads for everyone in the room** — any admitted member can download a file or a folder ZIP.
 - 💬 **Real-time chat** — powered by Socket.IO, with typing indicators.
-- 🛡️ **Role-based permissions (RBAC):**
-  - **Owner** — full control, can promote/demote admins.
-  - **Admin** — can manage member permissions and room settings.
-  - **Member** — permissions configurable per user (chat / upload / create folders / delete / rename).
+- ↩️ **Reply to messages** — WhatsApp / Instagram-style quote replies. Tap the quote to jump to the original.
+- 👁️ **Seen details** — double-ticks on your messages; tap them to see **who saw it and at what time**.
 - 🟢 **Online presence** — see who's currently in the room.
 - ⏳ **Custom auto-expiry (1 hour → 1 year)** — choose when creating, owner can change anytime; everything (files + chat) is permanently wiped when the timer runs out.
-- 🗑️ **Owner "Delete Room"** — instantly destroy the room and all its data; everyone gets disconnected.
+- 🚪 **Leave / Delete** — members can leave (they must be re-approved to come back). If the owner leaves or hits Delete, the room and all files are destroyed.
 - 📱 **Responsive UI** — works on desktop and mobile.
 - 📋 **Copy invite link** button for easy sharing.
-- 🕐 Activity feed showing who joined / uploaded / changed roles / updated settings.
+- 🕐 Activity feed showing who joined / uploaded / left / updated settings.
 
 ---
 
@@ -70,7 +72,8 @@ temp-share/
 │   │   └── style.css      # Custom styles (Tailwind via CDN)
 │   └── js/
 │       ├── app.js         # Landing page logic
-│       └── room.js        # Room page logic (chat, files, permissions)
+│       ├── dialog.js      # Custom confirm/prompt dialogs
+│       └── room.js        # Room page logic (chat, files, waiting room)
 ├── uploads/               # Uploaded files (organized by room ID) — created at runtime
 └── data/
     └── rooms.json         # Persisted room/user/file/chat metadata
@@ -82,13 +85,12 @@ temp-share/
 
 1. Open the homepage, enter your name, pick an **auto-delete** duration (1 hour → 1 year), then click **Create a Room**.
 2. You'll be taken to your new room. Click **Copy Link** and share it with others.
-3. Others open the link, enter their name, and land in the same room.
-4. **Upload files** (button or drag & drop, including whole folders), **create folders**, and **chat** in the right panel.
-5. The header shows a live countdown ⏳ until the room expires. As **owner**, click the pencil icon next to it to change the expiry anytime.
-6. As owner, click the **red Delete button** in the header to instantly wipe the room and disconnect everyone (double-confirm).
-7. As owner/admin, click the ⚙️ icon next to any user's name in the sidebar to:
-   - Toggle individual permissions (chat, upload, delete, create folder, rename).
-   - Promote to admin / demote to member (owner-only).
+3. Others open the link, enter their name, and land in the **waiting room**.
+4. As owner, admit or deny them from the **Waiting Room** panel in the sidebar.
+5. Once inside: **upload files** (button or drag & drop, including whole folders) and **chat**. Anyone in the room can download files or a folder ZIP.
+6. Hover a chat message and hit the reply arrow to quote it. Tap the double-ticks on your own messages to see who read them and when.
+7. The header shows a live countdown ⏳ until the room expires. As **owner**, click the pencil icon next to it to change the expiry anytime.
+8. **Members** click **Leave** to exit (they will need approval to rejoin). **Owner** clicks **Delete** — or leaving as owner — which wipes the room and disconnects everyone.
 
 ---
 
@@ -142,23 +144,34 @@ server {
       {
         "id": "...",
         "name": "Alex",
-        "role": "owner", // owner | admin | member
+        "role": "owner", // owner | member
         "permissions": {
           "can_chat": true,
           "can_upload": true,
-          "can_delete": true,
+          "can_delete": true,          // owner only in practice
           "can_create_folder": true,
           "can_rename": true
         },
         "joinedAt": 1700000000000
       }
     ],
+    "pendingUsers": [
+      { "id": "...", "name": "Sam", "requestedAt": 1700000100000 }
+    ],
     "files": [
-      { "id": "root", "name": "root", "type": "folder", "parentId": null, ... },
+      { "id": "root", "name": "root", "type": "folder", "parentId": null },
       { "id": "...", "type": "file", "name": "report.pdf", "parentId": "root", "size": 12345, "storageName": "...", "uploadedBy": "..." }
     ],
     "messages": [
-      { "id": "...", "userId": "...", "userName": "Alex", "text": "Hello!", "ts": 1700000000000 }
+      {
+        "id": "...",
+        "userId": "...",
+        "userName": "Alex",
+        "text": "Hello!",
+        "ts": 1700000000000,
+        "replyTo": { "id": "...", "userName": "Sam", "text": "Did you upload it?" },
+        "seenBy": { "<userId>": { "ts": 1700000005000, "name": "Sam" } }
+      }
     ]
   }
 }
@@ -173,7 +186,6 @@ server {
 - ☁️ S3 / Cloudinary / Firebase Storage backend for uploads
 - 💾 Persistent database (MongoDB / PostgreSQL / Redis) instead of JSON file
 - 🔔 Browser notifications for mentions
-- 👀 Read receipts
 - 🧭 File previews (images, PDFs, text)
 - 🔗 File sharing links (per-file public URLs)
 - 🌙 Dark/light theme toggle

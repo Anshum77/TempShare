@@ -32,12 +32,60 @@
   border-radius: 14px 14px 4px 14px;
 }
 
+/* Quoted reply inside a bubble */
+.reply-quote {
+  display: block;
+  border-left: 3px solid rgba(255,255,255,0.45);
+  background: rgba(0,0,0,0.18);
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin-bottom: 6px;
+  cursor: pointer;
+  text-align: left;
+}
+.bubble-other .reply-quote {
+  border-left-color: #f472b6;
+  background: rgba(15,23,42,0.45);
+}
+.reply-quote-name {
+  font-size: 11px;
+  font-weight: 700;
+  opacity: 0.95;
+}
+.reply-quote-text {
+  font-size: 11px;
+  opacity: 0.8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
+}
+
+/* Highlight a jumped-to message */
+.msg-highlight .bubble-me,
+.msg-highlight .bubble-other {
+  box-shadow: 0 0 0 2px #f472b6;
+}
+
+/* WhatsApp-style ticks */
+.ticks {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  line-height: 1;
+  cursor: pointer;
+  user-select: none;
+}
+.ticks svg { width: 16px; height: 16px; }
+.ticks.sent { color: #94a3b8; }
+.ticks.seen { color: #38bdf8; }
+
 /* File item hover */
 .file-item { transition: background 0.15s; }
 .file-item:hover { background: rgba(148,163,184,0.08); }
 .file-item.selected { background: rgba(236,72,153,0.15); }
 
-/* Chat message delete button appears on hover */
+/* Chat message action buttons appear on hover */
 .group-hover\/message:opacity-100 { opacity: 1 !important; }
 
 /* Toast animation */
@@ -48,7 +96,10 @@
 }
 
 /* Modal flex */
-#permModal[style*="flex"], #nameModal[style*="flex"] { display: flex !important; }
+#expiryModal[style*="flex"],
+#seenModal[style*="flex"],
+#nameModal[style*="flex"],
+#waitingOverlay[style*="flex"] { display: flex !important; }
 
 /* Mobile chat overlay adjustment */
 @media (max-width: 1023px) {

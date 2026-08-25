@@ -5,12 +5,15 @@ const socket = io();
 let state = {
   room: null,
   userId: localStorage.getItem('ts_user_' + roomId) || null,
+  pendingId: localStorage.getItem('ts_pending_' + roomId) || null,
   currentFolder: 'root',
   folderPath: [],
   typingTimeout: null,
   isTyping: false,
   sidebarOpen: false,
-  expiryInterval: null
+  expiryInterval: null,
+  replyTo: null,
+  seenTarget: null
 };
 
 // DOM elements
@@ -25,9 +28,14 @@ const els = {
   expirySelect: document.getElementById('expirySelect'),
   saveExpiryBtn: document.getElementById('saveExpiryBtn'),
   deleteRoomBtn: document.getElementById('deleteRoomBtn'),
+  leaveRoomBtn: document.getElementById('leaveRoomBtn'),
   copyLinkBtn: document.getElementById('copyLinkBtn'),
   toggleSidebar: document.getElementById('toggleSidebar'),
   sidebar: document.getElementById('sidebar'),
+  pendingSection: document.getElementById('pendingSection'),
+  pendingList: document.getElementById('pendingList'),
+  pendingCount: document.getElementById('pendingCount'),
+  pendingBadgeMobile: document.getElementById('pendingBadgeMobile'),
   userList: document.getElementById('userList'),
   userCount: document.getElementById('userCount'),
   myInfo: document.getElementById('myInfo'),
@@ -48,15 +56,19 @@ const els = {
   chatMuted: document.getElementById('chatMuted'),
   typingIndicator: document.getElementById('typingIndicator'),
   activityBar: document.getElementById('activityBar'),
-  permModal: document.getElementById('permModal'),
-  closePermModal: document.getElementById('closePermModal'),
-  permTitle: document.getElementById('permTitle'),
-  permSubtitle: document.getElementById('permSubtitle'),
-  permBody: document.getElementById('permBody'),
-  permRoleSection: document.getElementById('permRoleSection'),
+  replyBar: document.getElementById('replyBar'),
+  replyToName: document.getElementById('replyToName'),
+  replyToText: document.getElementById('replyToText'),
+  cancelReplyBtn: document.getElementById('cancelReplyBtn'),
+  seenModal: document.getElementById('seenModal'),
+  seenBody: document.getElementById('seenBody'),
+  closeSeenModal: document.getElementById('closeSeenModal'),
   nameModal: document.getElementById('nameModal'),
   joinNameInput: document.getElementById('joinNameInput'),
   joinNameBtn: document.getElementById('joinNameBtn'),
+  waitingOverlay: document.getElementById('waitingOverlay'),
+  waitingText: document.getElementById('waitingText'),
+  cancelWaitBtn: document.getElementById('cancelWaitBtn'),
 };
 
 // ---------- Utilities ----------
@@ -112,7 +124,7 @@ async function changeExpiry(hours) {
     updateExpiryBadge();
     els.expiryModal.style.display = 'none';
     showToast('Expiry updated');
-  } catch(e) { showToast(e.message, true); }
+  } catch (e) { showToast(e.message, true); }
 }
 
 async function deleteRoom() {
@@ -133,9 +145,37 @@ async function deleteRoom() {
       method: 'DELETE',
       body: JSON.stringify({ userId: state.userId })
     });
+    clearIdentity();
     showToast('Room deleted');
     setTimeout(() => window.location.href = '/', 1000);
-  } catch(e) { showToast(e.message, true); }
+  } catch (e) { showToast(e.message, true); }
+}
+
+async function leaveRoom() {
+  const isOwner = me() && me().role === 'owner';
+  if (isOwner) return deleteRoom();
+  const ok = await Dialog.confirm(
+    'You will need the owner to approve you again if you want to come back.',
+    'Leave this room?',
+    { okText: 'Leave', danger: true }
+  );
+  if (!ok) return;
+  try {
+    await api(`/api/rooms/${roomId}/leave`, {
+      method: 'POST',
+      body: JSON.stringify({ userId: state.userId })
+    });
+    clearIdentity();
+    showToast('You left the room');
+    setTimeout(() => window.location.href = '/', 800);
+  } catch (e) { showToast(e.message, true); }
+}
+
+function clearIdentity() {
+  localStorage.removeItem('ts_user_' + roomId);
+  localStorage.removeItem('ts_pending_' + roomId);
+  state.userId = null;
+  state.pendingId = null;
 }
 
 function showToast(msg, isError = false) {
@@ -179,18 +219,24 @@ function formatTime(ts) {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
+function formatSeenAt(ts) {
+  const d = new Date(ts);
+  const now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  if (sameDay) return time;
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ', ' + time;
+}
+
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
 // ---------- File-type icons ----------
-// Returns an HTML string: colored rounded tile with short extension label + generic fallback.
 const ICON_STYLES = {
-  // media
   image:    { bg: '#a78bfa', fg: '#1e1b4b', label: 'IMG' },
   video:    { bg: '#f472b6', fg: '#500724', label: 'VID' },
   audio:    { bg: '#34d399', fg: '#064e3b', label: 'AUD' },
-  // documents
   pdf:      { bg: '#ef4444', fg: '#fff',    label: 'PDF' },
   doc:      { bg: '#3b82f6', fg: '#fff',    label: 'DOC' },
   docx:     { bg: '#2563eb', fg: '#fff',    label: 'DOCX' },
@@ -203,7 +249,6 @@ const ICON_STYLES = {
   txt:      { bg: '#94a3b8', fg: '#0f172a', label: 'TXT' },
   md:       { bg: '#64748b', fg: '#fff',    label: 'MD' },
   rtf:      { bg: '#94a3b8', fg: '#0f172a', label: 'RTF' },
-  // code
   js:       { bg: '#fde047', fg: '#713f12', label: 'JS'  },
   mjs:      { bg: '#fde047', fg: '#713f12', label: 'MJS' },
   cjs:      { bg: '#fde047', fg: '#713f12', label: 'CJS' },
@@ -243,7 +288,6 @@ const ICON_STYLES = {
   sql:      { bg: '#0891b2', fg: '#fff',    label: 'SQL' },
   vue:      { bg: '#22c55e', fg: '#052e16', label: 'VUE' },
   svelte:   { bg: '#f97316', fg: '#fff',    label: 'SVL' },
-  // archives
   zip:      { bg: '#a16207', fg: '#fef3c7', label: 'ZIP' },
   rar:      { bg: '#a16207', fg: '#fef3c7', label: 'RAR' },
   '7z':     { bg: '#a16207', fg: '#fef3c7', label: '7Z'  },
@@ -251,17 +295,14 @@ const ICON_STYLES = {
   gz:       { bg: '#854d0e', fg: '#fef3c7', label: 'GZ'  },
   bz2:      { bg: '#854d0e', fg: '#fef3c7', label: 'BZ2' },
   xz:       { bg: '#854d0e', fg: '#fef3c7', label: 'XZ'  },
-  // executables / binaries
   exe:      { bg: '#475569', fg: '#fff',    label: 'EXE' },
   msi:      { bg: '#475569', fg: '#fff',    label: 'MSI' },
   dll:      { bg: '#334155', fg: '#fff',    label: 'DLL' },
   bin:      { bg: '#1e293b', fg: '#cbd5e1', label: 'BIN' },
-  // fonts
   ttf:      { bg: '#db2777', fg: '#fff',    label: 'TTF' },
   otf:      { bg: '#db2777', fg: '#fff',    label: 'OTF' },
   woff:     { bg: '#be185d', fg: '#fff',    label: 'WOFF' },
   woff2:    { bg: '#be185d', fg: '#fff',    label: 'WOFF2' },
-  // other
   iso:      { bg: '#64748b', fg: '#fff',    label: 'ISO' },
   dmg:      { bg: '#64748b', fg: '#fff',    label: 'DMG' }
 };
@@ -269,9 +310,6 @@ const ICON_STYLES = {
 const IMAGE_EXTS = new Set(['png','jpg','jpeg','gif','webp','svg','bmp','ico','tiff','tif','avif','heic','heif']);
 const VIDEO_EXTS = new Set(['mp4','mov','avi','mkv','webm','flv','wmv','m4v','mpg','mpeg','3gp']);
 const AUDIO_EXTS = new Set(['mp3','wav','ogg','flac','m4a','aac','wma','aiff','opus']);
-const CODE_EXTS = new Set(['js','mjs','cjs','ts','jsx','tsx','html','htm','css','scss','sass','less','json','xml','yaml','yml','py','java','c','cpp','cc','cxx','h','hpp','cs','go','rs','rb','php','swift','kt','sh','bash','zsh','bat','ps1','sql','vue','svelte']);
-const DOC_EXTS = new Set(['pdf','doc','docx','xls','xlsx','csv','ppt','pptx','txt','md','rtf']);
-const ARCHIVE_EXTS = new Set(['zip','rar','7z','tar','gz','bz2','xz']);
 
 function iconInfoFor(name) {
   const dot = name.lastIndexOf('.');
@@ -281,14 +319,12 @@ function iconInfoFor(name) {
   if (VIDEO_EXTS.has(ext)) return { ...ICON_STYLES.video, label: ext.slice(0,4).toUpperCase() };
   if (AUDIO_EXTS.has(ext)) return { ...ICON_STYLES.audio, label: ext.slice(0,3).toUpperCase() };
   if (ICON_STYLES[ext]) return ICON_STYLES[ext];
-  // Generic fallback: first 3-4 chars of extension
   return { bg: '#475569', fg: '#f1f5f9', label: ext.slice(0,4).toUpperCase() };
 }
 
 function fileIconHTML(name) {
   const info = iconInfoFor(name);
   const label = escapeHtml(info.label);
-  // Use inline styles so tailwind config doesn't need extension; font slightly condensed.
   return `<span class="inline-flex items-center justify-center rounded-md font-bold text-[10px] tracking-tight" style="background:${info.bg};color:${info.fg};min-width:34px;height:28px;padding:0 6px;">${label}</span>`;
 }
 
@@ -297,61 +333,139 @@ function folderIconHTML() {
 }
 
 function me() {
-  return state.room.users.find(u => u.id === state.userId);
+  return state.room && state.room.users.find(u => u.id === state.userId);
 }
 
 function can(perm) {
   const m = me();
   if (!m) return false;
   if (m.role === 'owner') return true;
-  if (m.role === 'admin') {
-    // admins can manage permissions by default (but cannot change other admins)
-    if (perm === 'manage_permissions') return true;
-    return m.permissions[perm] !== false;
-  }
   return m.permissions[perm] === true;
+}
+
+function ticksSVG() {
+  return `<svg viewBox="0 0 16 15" fill="currentColor" aria-hidden="true"><path d="M15.01 3.316l-.478-.372a.365.365 0 00-.51.063L8.666 9.88a.32.32 0 01-.484.032l-.358-.325a.32.32 0 00-.484.032l-.378.48a.418.418 0 00.036.54l1.32 1.267c.16.15.41.14.56-.02l6.326-8.1a.366.366 0 00-.064-.512zm-4.1 0l-.478-.372a.365.365 0 00-.51.063L4.566 9.88a.32.32 0 01-.484.032L1.892 7.77a.366.366 0 00-.516.005l-.423.433a.364.364 0 00.006.514l3.255 3.185c.16.15.41.14.56-.02l6.326-8.1a.365.365 0 00-.064-.512z"/></svg>`;
+}
+
+// ---------- Waiting / name overlays ----------
+function showNameModal() {
+  els.nameModal.style.display = 'flex';
+  els.waitingOverlay.style.display = 'none';
+  els.waitingOverlay.classList.add('hidden');
+  setTimeout(() => els.joinNameInput.focus(), 80);
+}
+
+function hideNameModal() {
+  els.nameModal.style.display = 'none';
+}
+
+function showWaiting(name, roomName) {
+  hideNameModal();
+  const who = name ? ` as ${name}` : '';
+  const room = roomName ? ` “${roomName}”` : '';
+  els.waitingText.textContent = `Your request${who} was sent${room}. You'll enter as soon as the owner lets you in.`;
+  els.waitingOverlay.classList.remove('hidden');
+  els.waitingOverlay.style.display = 'flex';
+}
+
+function hideWaiting() {
+  els.waitingOverlay.classList.add('hidden');
+  els.waitingOverlay.style.display = 'none';
+}
+
+function enterAsMember(data) {
+  state.room = data;
+  state.userId = data.myUserId;
+  state.pendingId = null;
+  localStorage.setItem('ts_user_' + roomId, state.userId);
+  localStorage.removeItem('ts_pending_' + roomId);
+  hideNameModal();
+  hideWaiting();
+  initRoom();
 }
 
 // ---------- Rendering ----------
 function renderHeader() {
   els.roomCode.textContent = '#' + state.room.id;
   els.roomName.value = state.room.name;
-  const editable = me() && (me().role === 'owner' || me().role === 'admin');
-  els.roomName.readOnly = !editable;
-  els.roomName.title = editable ? 'Click to rename room' : '';
-
-  // Owner controls
   const isOwner = me() && me().role === 'owner';
+  els.roomName.readOnly = !isOwner;
+  els.roomName.title = isOwner ? 'Click to rename room' : '';
+
   els.changeExpiryBtn.classList.toggle('hidden', !isOwner);
   els.deleteRoomBtn.classList.toggle('hidden', !isOwner);
   els.deleteRoomBtn.classList.toggle('flex', isOwner);
+  els.leaveRoomBtn.classList.toggle('hidden', isOwner);
+  els.leaveRoomBtn.classList.toggle('flex', !isOwner);
   els.expiryBadge.classList.remove('hidden');
   els.expiryBadge.classList.add('flex');
 
-  // Start/refresh countdown
   clearInterval(state.expiryInterval);
   updateExpiryBadge();
   state.expiryInterval = setInterval(updateExpiryBadge, 1000);
 }
 
+function renderPending() {
+  const isOwner = me() && me().role === 'owner';
+  const list = (isOwner && state.room.pendingUsers) ? state.room.pendingUsers : [];
+  const has = list.length > 0;
+  els.pendingSection.classList.toggle('hidden', !has);
+  if (els.pendingBadgeMobile) els.pendingBadgeMobile.classList.toggle('hidden', !has);
+  els.pendingCount.textContent = `(${list.length})`;
+  els.pendingList.innerHTML = '';
+  if (!has) return;
+
+  for (const p of list) {
+    const row = document.createElement('div');
+    row.className = 'bg-amber-500/10 border border-amber-500/20 rounded-xl p-2.5 fade-in';
+    row.innerHTML = `
+      <div class="flex items-center gap-2 mb-2">
+        <div class="w-8 h-8 rounded-full bg-amber-500/30 flex items-center justify-center font-bold text-sm text-amber-100">
+          ${escapeHtml((p.name || '?')[0] || '?').toUpperCase()}
+        </div>
+        <div class="flex-1 min-w-0">
+          <div class="font-medium text-sm truncate">${escapeHtml(p.name)}</div>
+          <div class="text-[11px] text-amber-200/70">Wants to join · ${timeAgo(p.requestedAt)}</div>
+        </div>
+      </div>
+      <div class="flex gap-2">
+        <button class="admit-btn flex-1 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs font-semibold">Admit</button>
+        <button class="deny-btn flex-1 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-xs font-semibold">Deny</button>
+      </div>
+    `;
+    row.querySelector('.admit-btn').addEventListener('click', () => decidePending(p.id, true));
+    row.querySelector('.deny-btn').addEventListener('click', () => decidePending(p.id, false));
+    els.pendingList.appendChild(row);
+  }
+}
+
+async function decidePending(pendingId, admit) {
+  try {
+    await api(`/api/rooms/${roomId}/${admit ? 'approve' : 'reject'}`, {
+      method: 'POST',
+      body: JSON.stringify({ actorUserId: state.userId, pendingId })
+    });
+    state.room.pendingUsers = (state.room.pendingUsers || []).filter(p => p.id !== pendingId);
+    renderPending();
+    showToast(admit ? 'Admitted' : 'Declined');
+  } catch (e) { showToast(e.message, true); }
+}
+
 function renderUsers() {
-  const sorted = [...state.room.users].sort((a,b) => {
-    const order = { owner: 0, admin: 1, member: 2 };
-    if (order[a.role] !== order[b.role]) return order[a.role] - order[b.role];
+  const sorted = [...state.room.users].sort((a, b) => {
+    const order = { owner: 0, member: 1 };
+    if ((order[a.role] ?? 9) !== (order[b.role] ?? 9)) return (order[a.role] ?? 9) - (order[b.role] ?? 9);
     return a.name.localeCompare(b.name);
   });
   els.userCount.textContent = `(${state.room.users.length})`;
   els.userList.innerHTML = '';
   for (const u of sorted) {
     const isMe = u.id === state.userId;
-    const roleBadge = {
-      owner: '<span class="text-[10px] font-bold bg-gradient-to-r from-pink-600 to-purple-600 px-2 py-0.5 rounded-full">OWNER</span>',
-      admin: '<span class="text-[10px] font-bold bg-indigo-600 px-2 py-0.5 rounded-full">ADMIN</span>',
-      member: ''
-    }[u.role];
-    const canManage = me() && (me().role === 'owner' || (me().role === 'admin' && u.role === 'member')) && !isMe;
+    const roleBadge = u.role === 'owner'
+      ? '<span class="text-[10px] font-bold bg-gradient-to-r from-pink-600 to-purple-600 px-2 py-0.5 rounded-full">OWNER</span>'
+      : '';
     const row = document.createElement('div');
-    row.className = 'file-item flex items-center gap-3 p-2.5 rounded-lg cursor-pointer fade-in';
+    row.className = 'file-item flex items-center gap-3 p-2.5 rounded-lg fade-in';
     row.innerHTML = `
       <div class="relative">
         <div class="w-9 h-9 rounded-full flex items-center justify-center font-bold text-sm ${isMe ? 'bg-gradient-to-br from-pink-500 to-indigo-500' : 'bg-slate-700'}">
@@ -366,10 +480,7 @@ function renderUsers() {
         </div>
         <div class="text-[11px] text-slate-500">${u.online ? 'Online' : 'Offline'}</div>
       </div>
-      ${canManage ? '<button class="perm-btn text-slate-400 hover:text-white p-1" title="Manage permissions"><svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg></button>' : ''}
     `;
-    const btn = row.querySelector('.perm-btn');
-    if (btn) btn.addEventListener('click', (e) => { e.stopPropagation(); openPermModal(u); });
     els.userList.appendChild(row);
   }
 
@@ -400,7 +511,7 @@ function navigateTo(folderId) {
 function navigateUp() {
   if (!state.room) return;
   const cur = state.room.files.find(f => f.id === state.currentFolder);
-  if (!cur || !cur.parentId) return; // at root
+  if (!cur || !cur.parentId) return;
   state.currentFolder = cur.parentId;
   renderFiles();
 }
@@ -420,9 +531,7 @@ function renderBreadcrumb() {
     btn.className = 'px-2 py-1 rounded hover:bg-slate-700 transition truncate max-w-[200px] ' + (isLast ? 'text-white font-semibold cursor-default' : 'text-slate-400 hover:text-slate-200');
     btn.textContent = i === 0 ? '📁 Root' : '📁 ' + f.name;
     btn.title = i === 0 ? 'Root' : f.name;
-    if (!isLast) {
-      btn.addEventListener('click', () => navigateTo(f.id));
-    }
+    if (!isLast) btn.addEventListener('click', () => navigateTo(f.id));
     els.breadcrumb.appendChild(btn);
     if (!isLast) {
       const sep = document.createElement('span');
@@ -431,7 +540,6 @@ function renderBreadcrumb() {
       els.breadcrumb.appendChild(sep);
     }
   });
-  // Update back button state
   const atRoot = state.currentFolder === 'root';
   els.backBtn.disabled = atRoot;
   els.backBtn.title = atRoot ? 'Already at root' : 'Go to parent folder (Backspace / Alt+↑)';
@@ -440,8 +548,7 @@ function renderBreadcrumb() {
 function renderFiles() {
   renderBreadcrumb();
   const children = state.room.files.filter(f => f.parentId === state.currentFolder);
-  // Sort: folders first, then files, alphabetical
-  children.sort((a,b) => {
+  children.sort((a, b) => {
     if (a.type !== b.type) return a.type === 'folder' ? -1 : 1;
     return a.name.localeCompare(b.name);
   });
@@ -460,7 +567,6 @@ function renderFiles() {
     const canRename = can('can_rename') || can('can_upload');
     const uploader = node.uploadedByName || node.createdByName || '';
     const date = node.uploadedAt || node.createdAt;
-
     const isFolder = node.type === 'folder';
     const iconHTML = isFolder ? folderIconHTML() : fileIconHTML(node.name);
 
@@ -501,7 +607,6 @@ function renderFiles() {
       }
     };
     nameEl.addEventListener('click', openNode);
-    // Make the whole row clickable for folders
     if (isFolder) {
       row.classList.add('cursor-pointer');
       row.addEventListener('click', (e) => {
@@ -517,9 +622,7 @@ function renderFiles() {
     if (renameBtn) renameBtn.addEventListener('click', async (e) => {
       e.stopPropagation();
       const newName = await Dialog.prompt(`Enter a new name for "${node.name}":`, node.name, 'Rename');
-      if (newName && newName !== node.name) {
-        renameFile(node.id, newName);
-      }
+      if (newName && newName !== node.name) renameFile(node.id, newName);
     });
 
     const delBtn = row.querySelector('.delete-btn');
@@ -536,6 +639,14 @@ function renderFiles() {
   }
 }
 
+function seenEntries(msg) {
+  const raw = msg.seenBy || {};
+  return Object.entries(raw).map(([id, info]) => {
+    if (info && typeof info === 'object') return { id, ts: info.ts, name: info.name };
+    return { id, ts: info, name: null };
+  }).filter(e => e.id !== msg.userId);
+}
+
 function renderMessages() {
   const wasAtBottom = els.messages.scrollHeight - els.messages.scrollTop - els.messages.clientHeight < 80;
   els.messages.innerHTML = '';
@@ -543,26 +654,51 @@ function renderMessages() {
   const myId = state.userId;
 
   for (const msg of state.room.messages) {
-    const isMe = msg.userId === state.userId;
-    // Delete permission: own message, or owner (always), or admin deleting a member's message
-    const author = state.room.users.find(u => u.id === msg.userId);
-    const authorRole = author ? author.role : 'member';
-    const canDelete = isMe || myRole === 'owner' || (myRole === 'admin' && authorRole === 'member');
+    const isMe = msg.userId === myId;
+    const canDelete = isMe || myRole === 'owner';
+    const seen = seenEntries(msg);
+    const seenClass = seen.length ? 'seen' : 'sent';
+    const reply = msg.replyTo;
 
     const wrapper = document.createElement('div');
     wrapper.className = 'flex fade-in group/message relative ' + (isMe ? 'justify-end' : 'justify-start');
+    wrapper.dataset.msgId = msg.id;
     wrapper.innerHTML = `
       <div class="max-w-[80%] ${isMe ? 'items-end' : 'items-start'} flex flex-col">
-        ${!isMe ? `<span class="text-[11px] text-slate-500 mb-0.5 ml-2">${escapeHtml(msg.userName)}${msg.role !== 'member' ? ' <span class="text-pink-400 font-semibold">('+msg.role.toUpperCase()+')</span>' : ''} · ${formatTime(msg.ts)}</span>` : ''}
+        ${!isMe ? `<span class="text-[11px] text-slate-500 mb-0.5 ml-2">${escapeHtml(msg.userName)}${msg.role === 'owner' ? ' <span class="text-pink-400 font-semibold">(OWNER)</span>' : ''} · ${formatTime(msg.ts)}</span>` : ''}
         <div class="relative flex items-center gap-1 ${isMe ? 'flex-row-reverse' : ''}">
-          <div class="${isMe ? 'bubble-me' : 'bubble-other'} px-3 py-2 text-sm shadow break-words">${escapeHtml(msg.text)}</div>
-          ${canDelete ? `<button data-msg-id="${msg.id}" class="msg-del opacity-0 group-hover/message:opacity-100 transition p-1.5 rounded-full hover:bg-red-600/20 text-red-400 shrink-0" title="Delete message">
-            <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6M1 7h22M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3"/></svg>
-          </button>` : ''}
+          <div class="${isMe ? 'bubble-me' : 'bubble-other'} px-3 py-2 text-sm shadow break-words">
+            ${reply ? `<div class="reply-quote" data-jump="${escapeHtml(reply.id)}">
+              <div class="reply-quote-name">${escapeHtml(reply.userName || 'Message')}</div>
+              <div class="reply-quote-text">${escapeHtml(reply.text || '')}</div>
+            </div>` : ''}
+            ${escapeHtml(msg.text)}
+          </div>
+          <div class="opacity-0 group-hover/message:opacity-100 transition flex items-center gap-0.5 shrink-0">
+            <button data-reply-id="${msg.id}" class="msg-reply p-1.5 rounded-full hover:bg-slate-700 text-slate-300" title="Reply">
+              <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6"/></svg>
+            </button>
+            ${canDelete ? `<button data-msg-id="${msg.id}" class="msg-del p-1.5 rounded-full hover:bg-red-600/20 text-red-400" title="Delete message">
+              <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6M1 7h22M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3"/></svg>
+            </button>` : ''}
+          </div>
         </div>
-        ${isMe ? `<span class="text-[11px] text-slate-500 mt-0.5 mr-2">${formatTime(msg.ts)}</span>` : ''}
+        ${isMe ? `<span class="text-[11px] text-slate-500 mt-0.5 mr-1 flex items-center gap-1">
+          ${formatTime(msg.ts)}
+          <button class="ticks ${seenClass} seen-btn" title="${seen.length ? 'Seen · tap for details' : 'Sent · tap for details'}" aria-label="Message info">${ticksSVG()}</button>
+        </span>` : ''}
       </div>
     `;
+
+    const quote = wrapper.querySelector('.reply-quote');
+    if (quote) quote.addEventListener('click', () => scrollToMessage(reply.id));
+
+    const replyBtn = wrapper.querySelector('.msg-reply');
+    if (replyBtn) replyBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      setReplyTo(msg);
+    });
+
     const delBtn = wrapper.querySelector('.msg-del');
     if (delBtn) {
       delBtn.addEventListener('click', async (e) => {
@@ -576,18 +712,94 @@ function renderMessages() {
         if (ok) deleteMessage(msg.id);
       });
     }
+
+    const seenBtn = wrapper.querySelector('.seen-btn');
+    if (seenBtn) seenBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openSeenModal(msg);
+    });
+
     els.messages.appendChild(wrapper);
   }
   if (wasAtBottom) els.messages.scrollTop = els.messages.scrollHeight;
 }
 
+function setReplyTo(msg) {
+  state.replyTo = { id: msg.id, userName: msg.userName, text: msg.text };
+  els.replyToName.textContent = msg.userName || 'Message';
+  els.replyToText.textContent = msg.text || '';
+  els.replyBar.classList.remove('hidden');
+  els.chatInput.focus();
+}
+
+function clearReply() {
+  state.replyTo = null;
+  els.replyBar.classList.add('hidden');
+}
+
+function scrollToMessage(id) {
+  const el = els.messages.querySelector(`[data-msg-id="${id}"]`);
+  if (!el) {
+    showToast('Original message is no longer available');
+    return;
+  }
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  el.classList.add('msg-highlight');
+  setTimeout(() => el.classList.remove('msg-highlight'), 1600);
+}
+
+function openSeenModal(msg) {
+  state.seenTarget = msg;
+  const seen = seenEntries(msg).sort((a, b) => (a.ts || 0) - (b.ts || 0));
+  const seenIds = new Set(seen.map(s => s.id));
+  const others = (state.room.users || []).filter(u => u.id !== msg.userId && !seenIds.has(u.id));
+
+  let html = '';
+  html += `<div>
+    <p class="text-xs uppercase tracking-wide text-slate-400 font-semibold mb-2">Seen by</p>`;
+  if (!seen.length) {
+    html += `<p class="text-slate-500 text-sm">No one has seen this yet.</p>`;
+  } else {
+    html += `<div class="space-y-2">`;
+    for (const s of seen) {
+      const name = s.name || (state.room.users.find(u => u.id === s.id) || {}).name || 'Someone';
+      html += `<div class="flex items-center justify-between gap-3">
+        <span class="font-medium truncate">${escapeHtml(name)}</span>
+        <span class="text-slate-400 text-xs shrink-0">${s.ts ? formatSeenAt(s.ts) : ''}</span>
+      </div>`;
+    }
+    html += `</div>`;
+  }
+  html += `</div>`;
+
+  html += `<div>
+    <p class="text-xs uppercase tracking-wide text-slate-400 font-semibold mb-2">Not seen yet</p>`;
+  if (!others.length) {
+    html += `<p class="text-slate-500 text-sm">${seen.length ? 'Everyone currently in the room has seen it.' : 'Waiting for others to open the chat.'}</p>`;
+  } else {
+    html += `<div class="space-y-1.5">`;
+    for (const u of others) {
+      html += `<div class="text-slate-300">${escapeHtml(u.name)}</div>`;
+    }
+    html += `</div>`;
+  }
+  html += `</div>`;
+
+  els.seenBody.innerHTML = html;
+  els.seenModal.style.display = 'flex';
+}
+
+function closeSeenModal() {
+  els.seenModal.style.display = 'none';
+  state.seenTarget = null;
+}
+
 async function deleteMessage(msgId) {
   try {
     await api(`/api/rooms/${roomId}/messages/${msgId}?userId=${state.userId}`, { method: 'DELETE' });
-    // Optimistically remove locally; realtime event will sync for others
     state.room.messages = state.room.messages.filter(m => m.id !== msgId);
     renderMessages();
-  } catch(e) { showToast(e.message, true); }
+  } catch (e) { showToast(e.message, true); }
 }
 
 function updateChatPermission() {
@@ -608,7 +820,17 @@ function updateFilePermissions() {
 }
 
 function updateRoomNameEditable() {
-  els.roomName.readOnly = !(me() && (me().role === 'owner' || me().role === 'admin'));
+  els.roomName.readOnly = !(me() && me().role === 'owner');
+}
+
+function markVisibleSeen() {
+  if (!state.room || !state.userId) return;
+  if (document.visibilityState !== 'visible') return;
+  const unseen = state.room.messages
+    .filter(m => m.userId !== state.userId && !(m.seenBy && m.seenBy[state.userId]))
+    .map(m => m.id);
+  if (!unseen.length) return;
+  socket.emit('mark_seen', { roomId, userId: state.userId, messageIds: unseen });
 }
 
 // ---------- API actions ----------
@@ -618,24 +840,28 @@ async function api(url, opts = {}) {
     ...opts
   });
   let data = {};
-  try { data = await res.json(); } catch(e) {}
+  try { data = await res.json(); } catch (e) {}
   if (!res.ok) throw new Error(data.error || 'Request failed');
   return data;
 }
 
-async function joinRoom(name) {
+async function requestJoin(name) {
   try {
     const data = await api(`/api/rooms/${roomId}/join`, {
       method: 'POST',
-      body: JSON.stringify({ name, userId: state.userId })
+      body: JSON.stringify({ name, userId: state.userId || state.pendingId || undefined })
     });
-    state.room = data;
-    state.userId = data.myUserId;
-    localStorage.setItem('ts_user_' + roomId, state.userId);
+    if (data.status === 'pending') {
+      state.pendingId = data.pendingId;
+      localStorage.setItem('ts_pending_' + roomId, data.pendingId);
+      localStorage.setItem('ts_lastname', name);
+      showWaiting(data.name, data.roomName);
+      socket.emit('wait_approval', { roomId, pendingId: data.pendingId });
+      return;
+    }
     localStorage.setItem('ts_lastname', name);
-    els.nameModal.style.display = 'none';
-    initRoom();
-  } catch(e) {
+    enterAsMember(data);
+  } catch (e) {
     showToast(e.message, true);
   }
 }
@@ -665,14 +891,14 @@ async function uploadFiles(fileList, paths = null, folderPaths = null) {
         if (xhr.status >= 200 && xhr.status < 300) resolve(xhr.response);
         else {
           try { reject(new Error(JSON.parse(xhr.response).error || 'Upload failed')); }
-          catch(e) { reject(new Error('Upload failed')); }
+          catch (e) { reject(new Error('Upload failed')); }
         }
       };
       xhr.onerror = () => reject(new Error('Network error'));
       xhr.send(fd);
     });
     showToast(`Uploaded ${files.length} file(s)${folderMsg} successfully`);
-  } catch(e) {
+  } catch (e) {
     showToast('Upload failed: ' + e.message, true);
   }
 }
@@ -686,13 +912,13 @@ async function createFolder() {
       method: 'POST',
       body: JSON.stringify({ userId: state.userId, name: name.trim(), parentId: state.currentFolder })
     });
-  } catch(e) { showToast(e.message, true); }
+  } catch (e) { showToast(e.message, true); }
 }
 
 async function deleteFile(fileId) {
   try {
     await api(`/api/rooms/${roomId}/files/${fileId}?userId=${state.userId}`, { method: 'DELETE' });
-  } catch(e) { showToast(e.message, true); }
+  } catch (e) { showToast(e.message, true); }
 }
 
 async function renameFile(fileId, newName) {
@@ -701,7 +927,7 @@ async function renameFile(fileId, newName) {
       method: 'PATCH',
       body: JSON.stringify({ userId: state.userId, name: newName })
     });
-  } catch(e) { showToast(e.message, true); }
+  } catch (e) { showToast(e.message, true); }
 }
 
 async function renameRoom(newName) {
@@ -710,111 +936,21 @@ async function renameRoom(newName) {
       method: 'PATCH',
       body: JSON.stringify({ userId: state.userId, name: newName })
     });
-  } catch(e) { showToast(e.message, true); }
-}
-
-async function updatePermissions(targetUserId, perms) {
-  try {
-    await api(`/api/rooms/${roomId}/users/${targetUserId}/permissions`, {
-      method: 'PATCH',
-      body: JSON.stringify({ actorUserId: state.userId, permissions: perms })
-    });
-  } catch(e) { showToast(e.message, true); }
-}
-
-async function updateRole(targetUserId, role) {
-  try {
-    await api(`/api/rooms/${roomId}/users/${targetUserId}/role`, {
-      method: 'PATCH',
-      body: JSON.stringify({ actorUserId: state.userId, role })
-    });
-    closePermModalFn();
-  } catch(e) { showToast(e.message, true); }
-}
-
-// ---------- Permissions modal ----------
-let permTarget = null;
-function openPermModal(user) {
-  permTarget = user;
-  els.permTitle.textContent = user.name;
-  els.permSubtitle.textContent = `Role: ${user.role}`;
-  const myRole = me().role;
-  const iAmOwner = myRole === 'owner';
-
-  const fields = [
-    { key: 'can_chat', label: 'Can send chat messages', icon: '💬' },
-    { key: 'can_upload', label: 'Can upload files', icon: '⬆️' },
-    { key: 'can_create_folder', label: 'Can create folders', icon: '📁' },
-    { key: 'can_delete', label: 'Can delete files/folders', icon: '🗑️' },
-    { key: 'can_rename', label: 'Can rename items', icon: '✏️' },
-  ];
-
-  // Can't edit other admins if you're not owner, or owner
-  if (user.role === 'owner') {
-    els.permBody.innerHTML = '<p class="text-sm text-slate-400">The room owner has full permissions and cannot be restricted.</p>';
-    els.permRoleSection.classList.add('hidden');
-    els.permModal.style.display = 'flex';
-    return;
-  }
-
-  const canEdit = iAmOwner || (myRole === 'admin' && user.role === 'member');
-  if (!canEdit) {
-    els.permBody.innerHTML = '<p class="text-sm text-slate-400">You cannot modify this user.</p>';
-    els.permRoleSection.classList.add('hidden');
-    els.permModal.style.display = 'flex';
-    return;
-  }
-
-  els.permBody.innerHTML = '';
-  for (const f of fields) {
-    const enabled = user.permissions[f.key] === true;
-    const row = document.createElement('label');
-    row.className = 'flex items-center justify-between p-3 bg-slate-900/50 rounded-lg cursor-pointer hover:bg-slate-900';
-    row.innerHTML = `
-      <span class="flex items-center gap-2 text-sm"><span>${f.icon}</span>${f.label}</span>
-      <div class="relative">
-        <input type="checkbox" data-key="${f.key}" ${enabled ? 'checked' : ''} class="peer sr-only perm-toggle" />
-        <div class="w-11 h-6 bg-slate-600 rounded-full peer-checked:bg-pink-500 transition"></div>
-        <div class="absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition peer-checked:translate-x-5"></div>
-      </div>
-    `;
-    els.permBody.appendChild(row);
-  }
-  els.permBody.querySelectorAll('.perm-toggle').forEach(cb => {
-    cb.addEventListener('change', () => {
-      updatePermissions(user.id, { [cb.dataset.key]: cb.checked });
-    });
-  });
-
-  // Role buttons (owner only)
-  if (iAmOwner && user.id !== state.userId) {
-    els.permRoleSection.classList.remove('hidden');
-    els.permRoleSection.querySelectorAll('.role-btn').forEach(b => {
-      b.classList.remove('bg-pink-600', 'bg-indigo-600');
-      b.classList.add('bg-slate-700');
-      if (b.dataset.role === user.role) {
-        b.classList.remove('bg-slate-700');
-        b.classList.add('bg-indigo-600');
-      }
-    });
-  } else {
-    els.permRoleSection.classList.add('hidden');
-  }
-
-  els.permModal.style.display = 'flex';
-}
-
-function closePermModalFn() {
-  els.permModal.style.display = 'none';
-  permTarget = null;
+  } catch (e) { showToast(e.message, true); }
 }
 
 // ---------- Chat ----------
 function sendMessage() {
   const text = els.chatInput.value.trim();
   if (!text) return;
-  socket.emit('send_message', { roomId, userId: state.userId, text });
+  socket.emit('send_message', {
+    roomId,
+    userId: state.userId,
+    text,
+    replyToId: state.replyTo ? state.replyTo.id : undefined
+  });
   els.chatInput.value = '';
+  clearReply();
   state.isTyping = false;
   socket.emit('typing', { roomId, userId: state.userId, isTyping: false });
 }
@@ -837,20 +973,28 @@ els.chatInput.addEventListener('input', () => {
   }, 1500);
 });
 
+els.cancelReplyBtn.addEventListener('click', clearReply);
+
 // ---------- Socket events ----------
 socket.on('connect', () => {
   if (state.room && state.userId) {
     socket.emit('join_room', { roomId, userId: state.userId });
+  } else if (state.pendingId) {
+    socket.emit('wait_approval', { roomId, pendingId: state.pendingId });
   }
 });
 
 socket.on('new_message', (msg) => {
+  if (!state.room) return;
+  if (!msg.seenBy) msg.seenBy = {};
   state.room.messages.push(msg);
   if (state.room.messages.length > 500) state.room.messages = state.room.messages.slice(-500);
   renderMessages();
+  if (msg.userId !== state.userId) markVisibleSeen();
 });
 
 socket.on('users_updated', ({ users }) => {
+  if (!state.room) return;
   state.room.users = users;
   renderUsers();
   updateChatPermission();
@@ -858,7 +1002,7 @@ socket.on('users_updated', ({ users }) => {
 });
 
 socket.on('presence', ({ users }) => {
-  // Merge online status
+  if (!state.room) return;
   const onlineMap = {};
   users.forEach(u => onlineMap[u.id] = u.online);
   state.room.users.forEach(u => { u.online = onlineMap[u.id] || false; });
@@ -866,28 +1010,85 @@ socket.on('presence', ({ users }) => {
 });
 
 socket.on('files_updated', ({ files }) => {
+  if (!state.room) return;
   state.room.files = files;
-  // Make sure we still have a valid current folder
-  if (!files.find(f => f.id === state.currentFolder)) {
-    state.currentFolder = 'root';
-  }
+  if (!files.find(f => f.id === state.currentFolder)) state.currentFolder = 'root';
   renderFiles();
 });
 
 socket.on('room_updated', ({ name, expiresAt }) => {
+  if (!state.room) return;
   if (name) state.room.name = name;
   if (expiresAt) state.room.expiresAt = expiresAt;
   renderHeader();
 });
 
 socket.on('message_deleted', ({ messageId }) => {
+  if (!state.room) return;
   const before = state.room.messages.length;
   state.room.messages = state.room.messages.filter(m => m.id !== messageId);
   if (state.room.messages.length !== before) renderMessages();
 });
 
+socket.on('seen_update', ({ updates }) => {
+  if (!state.room || !updates) return;
+  let changed = false;
+  for (const u of updates) {
+    const msg = state.room.messages.find(m => m.id === u.messageId);
+    if (!msg) continue;
+    if (!msg.seenBy) msg.seenBy = {};
+    msg.seenBy[u.userId] = { ts: u.ts, name: u.name };
+    changed = true;
+  }
+  if (changed) {
+    renderMessages();
+    if (state.seenTarget) {
+      const fresh = state.room.messages.find(m => m.id === state.seenTarget.id);
+      if (fresh) openSeenModal(fresh);
+    }
+  }
+});
+
+socket.on('pending_updated', ({ pendingUsers }) => {
+  if (!state.room) return;
+  state.room.pendingUsers = pendingUsers || [];
+  renderPending();
+});
+
+socket.on('join_request', ({ name }) => {
+  if (me() && me().role === 'owner') {
+    showToast(`${name} wants to join`);
+  }
+});
+
+socket.on('join_approved', (data) => {
+  showToast('You were admitted to the room');
+  enterAsMember(data);
+});
+
+socket.on('join_rejected', ({ reason }) => {
+  localStorage.removeItem('ts_pending_' + roomId);
+  state.pendingId = null;
+  const msg = {
+    denied: 'The owner declined your request',
+    expired: 'This room has expired',
+    deleted: 'This room was deleted',
+    left: 'Join request cancelled',
+    not_found: 'This room is no longer available'
+  }[reason] || 'You cannot join this room';
+  showToast(msg, reason !== 'left');
+  setTimeout(() => window.location.href = '/', 1800);
+});
+
+socket.on('forced_leave', () => {
+  clearIdentity();
+  showToast('You left the room');
+  setTimeout(() => window.location.href = '/', 800);
+});
+
 socket.on('room_deleted', ({ reason }) => {
   clearInterval(state.expiryInterval);
+  clearIdentity();
   showToast(reason === 'expired' ? 'This room has expired and was deleted' : 'This room was deleted by the owner', true);
   setTimeout(() => window.location.href = '/', 2000);
 });
@@ -899,8 +1100,7 @@ socket.on('activity', ({ text }) => {
   els.activityBar._t = setTimeout(() => els.activityBar.classList.add('hidden'), 4000);
 });
 
-socket.on('typing_update', ({ userId, userName, isTyping }) => {
-  // show one name at a time for simplicity
+socket.on('typing_update', ({ userName, isTyping }) => {
   if (isTyping) {
     els.typingIndicator.textContent = `${userName} is typing...`;
     els.typingIndicator.classList.remove('hidden');
@@ -917,8 +1117,7 @@ els.copyLinkBtn.addEventListener('click', async () => {
   try {
     await navigator.clipboard.writeText(link);
     showToast('Invite link copied!');
-  } catch(e) {
-    // Fallback: select text in a temporary textarea so user can copy
+  } catch (e) {
     const ta = document.createElement('textarea');
     ta.value = link;
     ta.style.position = 'fixed';
@@ -926,10 +1125,7 @@ els.copyLinkBtn.addEventListener('click', async () => {
     document.body.appendChild(ta);
     ta.select();
     try { document.execCommand('copy'); showToast('Invite link copied!'); }
-    catch(_) {
-      // Last resort: custom prompt showing the link
-      await Dialog.alert(link, 'Copy this invite link');
-    }
+    catch (_) { await Dialog.alert(link, 'Copy this invite link'); }
     document.body.removeChild(ta);
   }
 });
@@ -942,7 +1138,6 @@ els.fileInput.addEventListener('change', (e) => {
 });
 
 els.folderInput.addEventListener('click', async (e) => {
-  // Prefer File System Access API (supports empty folders) where available
   if (window.showDirectoryPicker) {
     e.preventDefault();
     try {
@@ -950,20 +1145,15 @@ els.folderInput.addEventListener('click', async (e) => {
       const { files, folderPaths } = await readDirHandle(dirHandle, dirHandle.name);
       const paths = files.map(f => f.relPath);
       await uploadFiles(files, paths, folderPaths);
-    } catch(err) {
-      // User cancelled — ignore
+    } catch (err) {
+      /* cancelled */
     }
   }
-  // else let the native webkitdirectory picker open (the change handler below will run)
 });
 
 els.folderInput.addEventListener('change', (e) => {
-  // Fallback for browsers without showDirectoryPicker (webkitdirectory).
-  // NOTE: This does NOT include empty folders (browser limitation).
   const files = Array.from(e.target.files || []);
   const paths = files.map(f => f.webkitRelativePath || f.name);
-  // Heuristic: collect unique parent directories from paths so non-empty
-  // intermediate folders are still created; truly empty folders are missed.
   const folderPaths = new Set();
   for (const p of paths) {
     const parts = p.split('/');
@@ -973,9 +1163,6 @@ els.folderInput.addEventListener('change', (e) => {
   e.target.value = '';
 });
 
-// ---------- Drag-and-drop (files + folders, empty folders included) ----------
-// Recursively read dropped items. Returns { files: File[], folderPaths: string[] }
-// so empty directories are preserved.
 function readEntry(entry, pathPrefix = '') {
   return new Promise((resolve) => {
     if (entry.isFile) {
@@ -991,7 +1178,7 @@ function readEntry(entry, pathPrefix = '') {
         reader.readEntries(async (batch) => {
           if (batch.length === 0) {
             const files = [];
-            const folders = [dirPath]; // this directory itself (even if empty)
+            const folders = [dirPath];
             for (const child of allEntries) {
               const got = await readEntry(child, dirPath + '/');
               files.push(...got.files);
@@ -1028,8 +1215,6 @@ async function getDroppedFiles(dt) {
   return { files: Array.from(dt.files || []), folderPaths: [] };
 }
 
-// Recursively read a FileSystemDirectoryHandle (modern File System Access API),
-// which DOES include empty directories.
 async function readDirHandle(dirHandle, baseName) {
   const files = [];
   const folderPaths = [];
@@ -1049,14 +1234,13 @@ async function readDirHandle(dirHandle, baseName) {
   return { files, folderPaths };
 }
 
-// Drag & drop
-;['dragenter','dragover'].forEach(ev => {
+;['dragenter', 'dragover'].forEach(ev => {
   els.dropZone.addEventListener(ev, (e) => {
     e.preventDefault(); e.stopPropagation();
     if (can('can_upload')) els.dropOverlay.classList.remove('hidden');
   });
 });
-;['dragleave','drop'].forEach(ev => {
+;['dragleave', 'drop'].forEach(ev => {
   els.dropZone.addEventListener(ev, (e) => {
     e.preventDefault(); e.stopPropagation();
     els.dropOverlay.classList.add('hidden');
@@ -1075,7 +1259,6 @@ els.dropZone.addEventListener('drop', async (e) => {
   }
 });
 
-// Rename room on enter
 els.roomName.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
     e.target.blur();
@@ -1093,21 +1276,12 @@ els.roomName.addEventListener('blur', () => {
   else els.roomName.value = state.room.name;
 });
 
-els.closePermModal.addEventListener('click', closePermModalFn);
-els.permModal.addEventListener('click', (e) => { if (e.target === els.permModal) closePermModalFn(); });
-els.permRoleSection.querySelectorAll('.role-btn').forEach(b => {
-  b.addEventListener('click', () => {
-    if (permTarget) updateRole(permTarget.id, b.dataset.role);
-  });
-});
-
 els.joinNameBtn.addEventListener('click', () => {
   const name = els.joinNameInput.value.trim() || localStorage.getItem('ts_lastname') || ('Guest_' + Math.floor(Math.random() * 1000));
-  joinRoom(name);
+  requestJoin(name);
 });
 els.joinNameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') els.joinNameBtn.click(); });
 
-// Expiry modal handlers
 els.changeExpiryBtn.addEventListener('click', () => {
   const hoursLeft = Math.max(1, (state.room.expiresAt - Date.now()) / 3600000);
   els.expirySelect.value = nearestExpiryOption(hoursLeft);
@@ -1119,21 +1293,34 @@ els.saveExpiryBtn.addEventListener('click', () => {
   changeExpiry(Number(els.expirySelect.value));
 });
 
-// Delete room
 els.deleteRoomBtn.addEventListener('click', deleteRoom);
+els.leaveRoomBtn.addEventListener('click', leaveRoom);
 
-// Navigation: back to parent, go to root
+els.closeSeenModal.addEventListener('click', closeSeenModal);
+els.seenModal.addEventListener('click', (e) => { if (e.target === els.seenModal) closeSeenModal(); });
+
+els.cancelWaitBtn.addEventListener('click', async () => {
+  const id = state.pendingId;
+  if (id) {
+    try {
+      await api(`/api/rooms/${roomId}/leave`, {
+        method: 'POST',
+        body: JSON.stringify({ userId: id })
+      });
+    } catch (e) { /* ignore */ }
+  }
+  clearIdentity();
+  window.location.href = '/';
+});
+
 els.backBtn.addEventListener('click', navigateUp);
 els.homeBtn.addEventListener('click', navigateToRoot);
 
-// Download current folder as ZIP
 els.downloadZipBtn.addEventListener('click', (e) => {
   e.preventDefault();
   if (!state.room) return;
   const folderId = state.currentFolder || 'root';
   const url = `/api/rooms/${roomId}/folders/${folderId}/zip?userId=${state.userId}`;
-  // Use a temp anchor so the browser treats it as a download, and a new tab
-  // won't flash (better than window.open).
   const a = document.createElement('a');
   a.href = url;
   a.download = '';
@@ -1143,16 +1330,13 @@ els.downloadZipBtn.addEventListener('click', (e) => {
   showToast('Preparing ZIP download…');
 });
 
-// Keyboard shortcuts for file navigation (only when NOT typing in an input)
 document.addEventListener('keydown', (e) => {
-  // Don't hijack keys while typing
   const tag = (e.target && e.target.tagName) || '';
   const isTyping = tag === 'INPUT' || tag === 'TEXTAREA' || e.target.isContentEditable;
   if (isTyping) return;
-  // Don't trigger while a dialog is open
   const dialogOpen = document.getElementById('dialog')?.style?.display === 'flex'
-                  || els.permModal?.style?.display === 'flex'
                   || els.expiryModal?.style?.display === 'flex'
+                  || els.seenModal?.style?.display === 'flex'
                   || els.nameModal?.style?.display === 'flex';
   if (dialogOpen) return;
 
@@ -1165,7 +1349,10 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-// Mobile sidebar toggle
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') markVisibleSeen();
+});
+
 els.toggleSidebar.addEventListener('click', () => {
   state.sidebarOpen = !state.sidebarOpen;
   if (state.sidebarOpen) {
@@ -1186,39 +1373,57 @@ els.toggleSidebar.addEventListener('click', () => {
 
 // ---------- Init ----------
 async function loadRoom() {
-  // Check if we already have a userId for this room
   if (state.userId) {
     try {
       const data = await api(`/api/rooms/${roomId}?userId=${state.userId}`);
-      state.room = data;
-      els.nameModal.style.display = 'none';
-      initRoom();
+      enterAsMember(data);
       return;
-    } catch(e) {
-      // Invalid user - fall through to name prompt
+    } catch (e) {
+      localStorage.removeItem('ts_user_' + roomId);
       state.userId = null;
     }
   }
-  // Show name modal
+
+  if (state.pendingId) {
+    try {
+      const data = await api(`/api/rooms/${roomId}/join`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: localStorage.getItem('ts_lastname') || 'Guest',
+          userId: state.pendingId
+        })
+      });
+      if (data.status === 'pending') {
+        showWaiting(data.name, data.roomName);
+        socket.emit('wait_approval', { roomId, pendingId: data.pendingId });
+        return;
+      }
+      enterAsMember(data);
+      return;
+    } catch (e) {
+      localStorage.removeItem('ts_pending_' + roomId);
+      state.pendingId = null;
+    }
+  }
+
   els.joinNameInput.value = localStorage.getItem('ts_lastname') || '';
-  els.nameModal.style.display = 'flex';
-  setTimeout(() => els.joinNameInput.focus(), 100);
+  showNameModal();
 }
 
 function initRoom() {
   renderHeader();
+  renderPending();
   renderUsers();
   renderFiles();
   renderMessages();
   updateChatPermission();
   updateFilePermissions();
   updateRoomNameEditable();
-
-  // Join socket room
   socket.emit('join_room', { roomId, userId: state.userId });
-
-  // Scroll chat to bottom
-  setTimeout(() => { els.messages.scrollTop = els.messages.scrollHeight; }, 100);
+  setTimeout(() => {
+    els.messages.scrollTop = els.messages.scrollHeight;
+    markVisibleSeen();
+  }, 100);
 }
 
 loadRoom();

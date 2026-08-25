@@ -44,18 +44,39 @@ function ensureDir(dir) {
 ensureDir(path.dirname(DATA_FILE)); // data/
 ensureDir(UPLOADS_DIR);             // uploads/
 
-// ---------- Ensure required directories exist ----------
-function ensureDir(dir) {
-  try { fs.mkdirSync(dir, { recursive: true }); } catch (e) { /* ignore */ }
-}
-ensureDir(path.dirname(DATA_FILE)); // data/
-ensureDir(UPLOADS_DIR);              // uploads/
-
 // ---------- Persistence ----------
+function normalizeRooms(data) {
+  if (!data || typeof data !== 'object') return {};
+  for (const room of Object.values(data)) {
+    if (!room || typeof room !== 'object') continue;
+    room.pendingUsers = Array.isArray(room.pendingUsers) ? room.pendingUsers : [];
+    room.users = Array.isArray(room.users) ? room.users : [];
+    room.files = Array.isArray(room.files) ? room.files : [];
+    room.messages = Array.isArray(room.messages) ? room.messages : [];
+    for (const u of room.users) {
+      // Legacy "admin" role is collapsed into member
+      if (u.role === 'admin') {
+        u.role = 'member';
+        u.permissions = defaultPermissions('member');
+      } else if (u.role === 'owner') {
+        u.permissions = defaultPermissions('owner');
+      } else {
+        u.role = 'member';
+        u.permissions = defaultPermissions('member');
+      }
+    }
+    for (const m of room.messages) {
+      if (!m.seenBy || typeof m.seenBy !== 'object') m.seenBy = {};
+      if (m.replyTo === undefined) m.replyTo = null;
+    }
+  }
+  return data;
+}
+
 function loadRooms() {
   try {
     if (fs.existsSync(DATA_FILE)) {
-      return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+      return normalizeRooms(JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')));
     }
   } catch (e) {
     console.error('Failed to load rooms data:', e);
@@ -71,9 +92,20 @@ function saveRooms() {
 let rooms = loadRooms();
 
 // ---------- Delete room (wipe all files + metadata) ----------
+function notifyRoomGone(roomId, reason) {
+  const room = rooms[roomId];
+  io.to('room:' + roomId).emit('room_deleted', { reason });
+  io.to('room:' + roomId).socketsLeave('room:' + roomId);
+  if (room && Array.isArray(room.pendingUsers)) {
+    for (const p of room.pendingUsers) {
+      io.to('pending:' + p.id).emit('join_rejected', { reason: reason === 'expired' ? 'expired' : 'deleted' });
+    }
+  }
+}
+
 function deleteRoom(roomId) {
   const roomDir = path.join(UPLOADS_DIR, roomId);
-  try { if (fs.existsSync(roomDir)) fs.rmSync(roomDir, { recursive: true, force: true }); } catch(e) {}
+  try { if (fs.existsSync(roomDir)) fs.rmSync(roomDir, { recursive: true, force: true }); } catch (e) {}
   delete rooms[roomId];
 }
 
@@ -87,9 +119,7 @@ function pruneExpiredRooms() {
     }
   }
   for (const id of expiredIds) {
-    // Notify connected users right before wiping
-    io.to('room:' + id).emit('room_deleted', { reason: 'expired' });
-    io.to('room:' + id).socketsLeave('room:' + id);
+    notifyRoomGone(id, 'expired');
     deleteRoom(id);
   }
   if (expiredIds.length) saveRooms();
@@ -103,7 +133,6 @@ function uid() {
 }
 
 function shortRoomId() {
-  // Human-friendly short id
   return crypto.randomBytes(4).toString('hex').toLowerCase();
 }
 
@@ -112,9 +141,10 @@ function sanitizeFilename(name) {
 }
 
 function defaultPermissions(role) {
-  if (role === 'owner' || role === 'admin') {
+  if (role === 'owner') {
     return { can_chat: true, can_upload: true, can_delete: true, can_create_folder: true, can_rename: true };
   }
+  // Members: chat + upload. Downloads are available to every admitted member.
   return { can_chat: true, can_upload: true, can_delete: false, can_create_folder: false, can_rename: false };
 }
 
@@ -123,23 +153,40 @@ function getRoom(roomId) {
 }
 
 function getUser(room, userId) {
+  if (!room || !userId) return null;
   return room.users.find(u => u.id === userId) || null;
+}
+
+function getPending(room, pendingId) {
+  if (!room || !pendingId) return null;
+  return (room.pendingUsers || []).find(p => p.id === pendingId) || null;
 }
 
 function canDo(room, userId, action) {
   const user = getUser(room, userId);
   if (!user) return false;
   if (user.role === 'owner') return true;
-  if (user.role === 'admin') {
-    // Admins can do everything except demote/delete owner or manage other admins' roles
-    if (action === 'manage_permissions') return true;
-    return user.permissions[action] !== false;
-  }
   return user.permissions[action] === true;
 }
 
+function requireMember(req, res) {
+  const room = getRoom(req.params.roomId);
+  if (!room) {
+    res.status(404).json({ error: 'Room not found or expired' });
+    return { room: null, user: null };
+  }
+  const userId = req.body?.userId || req.query?.userId || req.body?.actorUserId;
+  const user = getUser(room, userId);
+  if (!user) {
+    res.status(401).json({ error: 'Not a member' });
+    return { room, user: null };
+  }
+  return { room, user };
+}
+
 function roomPublicData(room, userId) {
-  return {
+  const me = getUser(room, userId);
+  const data = {
     id: room.id,
     createdAt: room.createdAt,
     expiresAt: room.expiresAt,
@@ -152,11 +199,15 @@ function roomPublicData(room, userId) {
       online: !!onlineUsers[room.id]?.[u.id]
     })),
     files: room.files,
-    messages: room.messages.slice(-100), // last 100 messages
+    messages: room.messages.slice(-100),
     myUserId: userId,
-    myPermissions: (getUser(room, userId) || {}).permissions || null,
-    myRole: (getUser(room, userId) || {}).role || null
+    myPermissions: (me || {}).permissions || null,
+    myRole: (me || {}).role || null
   };
+  if (me && me.role === 'owner') {
+    data.pendingUsers = room.pendingUsers || [];
+  }
+  return data;
 }
 
 // Track online users per room: { roomId: { userId: socketId } }
@@ -172,6 +223,32 @@ function broadcastRoom(roomId, event, payload) {
   io.to('room:' + roomId).emit(event, payload);
 }
 
+function kickUserSocket(roomId, userId, event, payload) {
+  const sid = onlineUsers[roomId]?.[userId];
+  if (sid) {
+    const sock = io.sockets.sockets.get(sid);
+    if (sock) {
+      sock.emit(event, payload);
+      sock.leave('room:' + roomId);
+    }
+  }
+  setOffline(roomId, userId);
+}
+
+function markMessagesSeen(room, user) {
+  if (!room || !user) return [];
+  const now = Date.now();
+  const updates = [];
+  for (const msg of room.messages) {
+    if (msg.userId === user.id) continue;
+    if (!msg.seenBy || typeof msg.seenBy !== 'object') msg.seenBy = {};
+    if (msg.seenBy[user.id]) continue;
+    msg.seenBy[user.id] = { ts: now, name: user.name };
+    updates.push({ messageId: msg.id, userId: user.id, ts: now, name: user.name });
+  }
+  return updates;
+}
+
 // ---------- File Upload ----------
 // Store flat (no subfolders on disk) with unique names; virtual folder structure
 // is reconstructed from metadata (so nested uploads never collide).
@@ -183,7 +260,6 @@ const storage = multer.diskStorage({
     cb(null, roomDir);
   },
   filename: function (req, file, cb) {
-    // Use a unique storage name to avoid collisions, keep original name in metadata
     const baseName = path.basename(file.originalname || 'file');
     const unique = uid() + '_' + sanitizeFilename(baseName);
     cb(null, unique);
@@ -195,13 +271,8 @@ const upload = multer({
 });
 
 // ---------- Virtual path helpers ----------
-// Given a POSIX-style relative path like "photos/vacation/img.jpg" and a starting folder id,
-// ensure all intermediate folders exist in room.files and return the parent folder id
-// where the file should live. Folder nodes are created as needed (idempotent — if a folder
-// with the same name already exists at that level, we reuse it).
 function ensureFolderPath(room, userId, relativePath, baseParentId) {
   if (!relativePath) return baseParentId;
-  // Normalize separators and split
   const normalized = String(relativePath).replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
   if (!normalized) return baseParentId;
   const parts = normalized.split('/').map(p => sanitizeFilename(p)).filter(Boolean);
@@ -211,16 +282,8 @@ function ensureFolderPath(room, userId, relativePath, baseParentId) {
   const now = Date.now();
   const uploaderName = (getUser(room, userId) || {}).name || 'Unknown';
 
-  // The last part is the filename, everything else is folders.
-  // We are ONLY creating folders, so drop the filename (caller passes dir-only for files,
-  // full path for files — we handle this by letting caller pass a file-aware path and we
-  // pop the last component below).
-  // Actually: we'll have caller pass the path and a flag, but for reuse we always interpret
-  // the LAST segment as a folder too if `asFolder` is true; here we always treat all parts
-  // as folders because the caller passes only the directory portion for files.
   for (const part of parts) {
     if (!part) continue;
-    // Look for existing folder with same name & parent
     let folder = room.files.find(f => f.type === 'folder' && f.parentId === currentParentId && f.name === part);
     if (!folder) {
       const newFolder = {
@@ -238,6 +301,11 @@ function ensureFolderPath(room, userId, relativePath, baseParentId) {
     currentParentId = folder.id;
   }
   return currentParentId;
+}
+
+function sanitizeZipName(name) {
+  let n = String(name).replace(/[\/\\\?\%\*\:\|"<>\x00-\x1f]/g, '_').replace(/^\.+/, '_');
+  return n.slice(0, 200) || 'file';
 }
 
 // ---------- REST Routes ----------
@@ -286,6 +354,7 @@ app.post('/api/rooms', (req, res) => {
       permissions: defaultPermissions('owner'),
       joinedAt: now
     }],
+    pendingUsers: [],
     files: [{ id: 'root', name: 'root', type: 'folder', parentId: null, createdAt: now }],
     messages: []
   };
@@ -293,54 +362,151 @@ app.post('/api/rooms', (req, res) => {
   res.json({ roomId, userId: ownerId, inviteLink: `/room/${roomId}` });
 });
 
-// Join room (sets/updates name, returns room data)
+// Join room — existing members re-enter; everyone else waits for owner approval
 app.post('/api/rooms/:roomId/join', (req, res) => {
   const room = getRoom(req.params.roomId);
   if (!room) return res.status(404).json({ error: 'Room not found or expired' });
 
   let userId = req.body.userId;
   let user = userId ? getUser(room, userId) : null;
-
   const name = (req.body.name && String(req.body.name).trim().slice(0, 40)) || ('Guest_' + Math.floor(Math.random() * 1000));
 
-  if (!user) {
-    userId = uid();
-    room.users.push({
-      id: userId,
-      name,
-      role: 'member',
-      permissions: defaultPermissions('member'),
-      joinedAt: Date.now()
-    });
-    saveRooms();
-  } else if (req.body.name && user.name !== name) {
-    user.name = name;
-    saveRooms();
+  if (user) {
+    if (req.body.name && user.name !== name) {
+      user.name = name;
+      saveRooms();
+    }
+    return res.json(roomPublicData(room, user.id));
   }
 
-  res.json(roomPublicData(room, userId));
+  let pending = userId ? getPending(room, userId) : null;
+  if (pending) {
+    if (req.body.name && pending.name !== name) {
+      pending.name = name;
+      saveRooms();
+      broadcastRoom(room.id, 'pending_updated', { pendingUsers: room.pendingUsers });
+    }
+    return res.json({ status: 'pending', pendingId: pending.id, name: pending.name, roomName: room.name });
+  }
+
+  const pendingId = uid();
+  room.pendingUsers = room.pendingUsers || [];
+  room.pendingUsers.push({
+    id: pendingId,
+    name,
+    requestedAt: Date.now()
+  });
+  saveRooms();
+  broadcastRoom(room.id, 'pending_updated', { pendingUsers: room.pendingUsers });
+  broadcastRoom(room.id, 'join_request', { id: pendingId, name });
+  res.json({ status: 'pending', pendingId, name, roomName: room.name });
 });
 
-// Get room
+// Get room (admitted members only)
 app.get('/api/rooms/:roomId', (req, res) => {
+  const { room, user } = requireMember(req, res);
+  if (!room || !user) return;
+  res.json(roomPublicData(room, user.id));
+});
+
+// Owner admits a waiting user
+app.post('/api/rooms/:roomId/approve', (req, res) => {
   const room = getRoom(req.params.roomId);
   if (!room) return res.status(404).json({ error: 'Room not found' });
-  const userId = req.query.userId;
+  const actor = getUser(room, req.body.actorUserId);
+  if (!actor || actor.role !== 'owner') return res.status(403).json({ error: 'Only the owner can admit people' });
+
+  const pendingId = req.body.pendingId;
+  const pending = getPending(room, pendingId);
+  if (!pending) return res.status(404).json({ error: 'No such join request' });
+
+  room.pendingUsers = room.pendingUsers.filter(p => p.id !== pendingId);
+  const now = Date.now();
+  room.users.push({
+    id: pending.id,
+    name: pending.name,
+    role: 'member',
+    permissions: defaultPermissions('member'),
+    joinedAt: now
+  });
+  saveRooms();
+
+  const admitted = roomPublicData(room, pending.id);
+  io.to('pending:' + pending.id).emit('join_approved', admitted);
+  broadcastRoom(room.id, 'users_updated', { users: admitted.users });
+  broadcastRoom(room.id, 'pending_updated', { pendingUsers: room.pendingUsers });
+  broadcastRoom(room.id, 'activity', { text: `${actor.name} admitted ${pending.name}` });
+  res.json({ ok: true, user: { id: pending.id, name: pending.name, role: 'member' } });
+});
+
+// Owner declines a waiting user
+app.post('/api/rooms/:roomId/reject', (req, res) => {
+  const room = getRoom(req.params.roomId);
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+  const actor = getUser(room, req.body.actorUserId);
+  if (!actor || actor.role !== 'owner') return res.status(403).json({ error: 'Only the owner can decline people' });
+
+  const pendingId = req.body.pendingId;
+  const pending = getPending(room, pendingId);
+  if (!pending) return res.status(404).json({ error: 'No such join request' });
+
+  room.pendingUsers = room.pendingUsers.filter(p => p.id !== pendingId);
+  saveRooms();
+  io.to('pending:' + pending.id).emit('join_rejected', { reason: 'denied' });
+  broadcastRoom(room.id, 'pending_updated', { pendingUsers: room.pendingUsers });
+  broadcastRoom(room.id, 'activity', { text: `${actor.name} declined ${pending.name}` });
+  res.json({ ok: true });
+});
+
+// Leave room. Owner leaving destroys the room and all files.
+app.post('/api/rooms/:roomId/leave', (req, res) => {
+  const room = getRoom(req.params.roomId);
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+  const userId = req.body.userId;
+
+  const pending = getPending(room, userId);
+  if (pending) {
+    room.pendingUsers = room.pendingUsers.filter(p => p.id !== userId);
+    saveRooms();
+    io.to('pending:' + userId).emit('join_rejected', { reason: 'left' });
+    broadcastRoom(room.id, 'pending_updated', { pendingUsers: room.pendingUsers });
+    return res.json({ ok: true });
+  }
+
   const user = getUser(room, userId);
   if (!user) return res.status(401).json({ error: 'Not a member' });
-  res.json(roomPublicData(room, userId));
+
+  if (user.role === 'owner') {
+    notifyRoomGone(room.id, 'deleted');
+    deleteRoom(room.id);
+    saveRooms();
+    return res.json({ ok: true, destroyed: true });
+  }
+
+  const name = user.name;
+  room.users = room.users.filter(u => u.id !== userId);
+  saveRooms();
+  kickUserSocket(room.id, userId, 'forced_leave', { reason: 'left' });
+  broadcastRoom(room.id, 'users_updated', {
+    users: room.users.map(u => ({
+      id: u.id,
+      name: u.name,
+      role: u.role,
+      permissions: u.permissions,
+      online: !!onlineUsers[room.id]?.[u.id]
+    }))
+  });
+  broadcastRoom(room.id, 'activity', { text: `${name} left the room` });
+  res.json({ ok: true });
 });
 
 // Upload files (supports nested folder uploads via `paths` JSON array)
-// Optional body field: `paths` — JSON array of relative paths (POSIX, using /), one per file,
-// e.g. ["photos/1.jpg", "photos/thumbs/1.jpg", "readme.txt"]. Folders are created automatically.
-// Without `paths`, files are placed directly in parentId (backward-compatible).
 app.post('/api/rooms/:roomId/upload', upload.array('files', 500), (req, res) => {
   const room = getRoom(req.params.roomId);
   if (!room) return res.status(404).json({ error: 'Room not found' });
   const userId = req.body.userId;
   if (!canDo(room, userId, 'can_upload')) {
-    (req.files || []).forEach(f => { try { fs.unlinkSync(f.path); } catch(e){} });
+    (req.files || []).forEach(f => { try { fs.unlinkSync(f.path); } catch (e) {} });
     return res.status(403).json({ error: 'You do not have upload permission' });
   }
 
@@ -348,7 +514,6 @@ app.post('/api/rooms/:roomId/upload', upload.array('files', 500), (req, res) => 
   const parentFolder = room.files.find(f => f.id === parentId && f.type === 'folder');
   if (!parentFolder) return res.status(400).json({ error: 'Invalid folder' });
 
-  // Parse per-file relative paths (for folder uploads)
   let paths = [];
   if (req.body.paths) {
     try { paths = JSON.parse(req.body.paths); } catch (e) { paths = []; }
@@ -359,13 +524,12 @@ app.post('/api/rooms/:roomId/upload', upload.array('files', 500), (req, res) => 
   const added = [];
   const foldersCreatedBefore = room.files.filter(f => f.type === 'folder').length;
 
-  // --- Ensure any explicitly requested folders exist (supports empty folder uploads) ---
   let folderPaths = [];
   if (req.body.folderPaths) {
     try { folderPaths = JSON.parse(req.body.folderPaths); } catch (e) { folderPaths = []; }
   }
   if (!Array.isArray(folderPaths)) folderPaths = [];
-  // Also infer folder-only paths from the `paths` array (dirs with no files)
+
   const inferredDirs = new Set();
   for (const p of paths) {
     if (typeof p !== 'string') continue;
@@ -384,7 +548,7 @@ app.post('/api/rooms/:roomId/upload', upload.array('files', 500), (req, res) => 
 
   for (let i = 0; i < (req.files || []).length; i++) {
     const f = req.files[i];
-    const relPath = paths[i]; // may be undefined
+    const relPath = paths[i];
     let fileParentId = parentId;
     let displayName = sanitizeFilename(f.originalname);
 
@@ -463,7 +627,6 @@ app.delete('/api/rooms/:roomId/files/:fileId', (req, res) => {
   const fileId = req.params.fileId;
   if (fileId === 'root') return res.status(400).json({ error: 'Cannot delete root' });
 
-  // Collect all files in subtree
   const toDelete = new Set();
   function collect(id) {
     toDelete.add(id);
@@ -478,7 +641,7 @@ app.delete('/api/rooms/:roomId/files/:fileId', (req, res) => {
       removed.push(node);
       if (node.type === 'file' && node.storageName) {
         const p = path.join(UPLOADS_DIR, room.id, node.storageName);
-        try { fs.unlinkSync(p); } catch(e){}
+        try { fs.unlinkSync(p); } catch (e) {}
       }
     }
   }
@@ -506,10 +669,12 @@ app.patch('/api/rooms/:roomId/files/:fileId', (req, res) => {
   res.json({ node });
 });
 
-// Download file
+// Download file — any admitted member (or owner) can download
 app.get('/api/rooms/:roomId/files/:fileId/download', (req, res) => {
   const room = getRoom(req.params.roomId);
   if (!room) return res.status(404).send('Room not found');
+  const user = getUser(room, req.query.userId);
+  if (!user) return res.status(401).send('Not a member');
   const node = room.files.find(f => f.id === req.params.fileId);
   if (!node || node.type !== 'file') return res.status(404).send('File not found');
   const p = path.join(UPLOADS_DIR, room.id, node.storageName);
@@ -518,20 +683,17 @@ app.get('/api/rooms/:roomId/files/:fileId/download', (req, res) => {
 });
 
 // Download folder as ZIP (preserves subfolder structure)
-// Usage: GET /api/rooms/:roomId/folders/:folderId/zip?userId=xxx
-// Pass fileId='root' to zip the entire room.
+// Any admitted member (or owner) can download.
 app.get('/api/rooms/:roomId/folders/:folderId/zip', (req, res) => {
   const room = getRoom(req.params.roomId);
   if (!room) return res.status(404).send('Room not found');
-  const userId = req.query.userId;
-  const user = getUser(room, userId);
+  const user = getUser(room, req.query.userId);
   if (!user) return res.status(401).send('Not a member');
 
   const folderId = req.params.folderId;
   const folder = room.files.find(f => f.id === folderId && f.type === 'folder');
   if (!folder) return res.status(404).send('Folder not found');
 
-  // Collect all descendants (files + folders) under this folder.
   const descendants = new Set();
   function collect(id) {
     descendants.add(id);
@@ -539,12 +701,9 @@ app.get('/api/rooms/:roomId/folders/:folderId/zip', (req, res) => {
   }
   collect(folderId);
 
-  // Build a map of id -> node for quick lookup, and parent id -> name.
   const byId = {};
   room.files.forEach(f => { byId[f.id] = f; });
 
-  // Compute ZIP entry path for each file by walking up to the folder root.
-  // If the downloaded folder is not "root", prefix everything with the folder name.
   const rootPrefix = folder.id === 'root' ? '' : sanitizeZipName(folder.name) + '/';
   function zipPathFor(fileNode) {
     const parts = [];
@@ -563,18 +722,16 @@ app.get('/api/rooms/:roomId/folders/:folderId/zip', (req, res) => {
   const archive = new ZipArchive({ zlib: { level: 6 } });
   archive.on('error', err => {
     console.error('ZIP error:', err);
-    try { res.status(500).end(); } catch(e) {}
+    try { res.status(500).end(); } catch (e) {}
   });
   archive.pipe(res);
 
-  // Add all files under this folder.
   let anyFile = false;
   for (const node of room.files) {
     if (node.type !== 'file' || !descendants.has(node.id)) continue;
     const diskPath = path.join(UPLOADS_DIR, room.id, node.storageName);
     if (!fs.existsSync(diskPath)) continue;
-    const entryName = zipPathFor(node);
-    archive.file(diskPath, { name: entryName });
+    archive.file(diskPath, { name: zipPathFor(node) });
     anyFile = true;
   }
 
@@ -585,69 +742,12 @@ app.get('/api/rooms/:roomId/folders/:folderId/zip', (req, res) => {
   archive.finalize();
 });
 
-function sanitizeZipName(name) {
-  // Strip characters that are unsafe across OSes, and prevent path traversal.
-  let n = String(name).replace(/[\/\\\?\%\*\:\|"<>\x00-\x1f]/g, '_').replace(/^\.+/, '_');
-  return n.slice(0, 200) || 'file';
-}
-
-// Update user permissions (admin/owner only)
-app.patch('/api/rooms/:roomId/users/:userId/permissions', (req, res) => {
-  const room = getRoom(req.params.roomId);
-  if (!room) return res.status(404).json({ error: 'Room not found' });
-  const actorId = req.body.actorUserId;
-  const actor = getUser(room, actorId);
-  if (!actor || (actor.role !== 'owner' && actor.role !== 'admin')) return res.status(403).json({ error: 'Not allowed' });
-
-  const targetId = req.params.userId;
-  const target = getUser(room, targetId);
-  if (!target) return res.status(404).json({ error: 'User not found' });
-
-  // Owner permissions cannot be changed by admins
-  if (target.role === 'owner') return res.status(403).json({ error: 'Cannot change owner permissions' });
-  if (actor.role === 'admin' && target.role === 'admin') return res.status(403).json({ error: 'Admins cannot modify other admins' });
-
-  const allowedKeys = ['can_chat', 'can_upload', 'can_delete', 'can_create_folder', 'can_rename'];
-  for (const key of allowedKeys) {
-    if (typeof req.body.permissions?.[key] === 'boolean') {
-      target.permissions[key] = req.body.permissions[key];
-    }
-  }
-  saveRooms();
-  broadcastRoom(room.id, 'users_updated', { users: room.users });
-  res.json({ user: target });
-});
-
-// Change user role
-app.patch('/api/rooms/:roomId/users/:userId/role', (req, res) => {
-  const room = getRoom(req.params.roomId);
-  if (!room) return res.status(404).json({ error: 'Room not found' });
-  const actorId = req.body.actorUserId;
-  const actor = getUser(room, actorId);
-  if (!actor || actor.role !== 'owner') return res.status(403).json({ error: 'Only owner can change roles' });
-
-  const targetId = req.params.userId;
-  if (targetId === actorId) return res.status(400).json({ error: 'Cannot change your own role' });
-  const target = getUser(room, targetId);
-  if (!target) return res.status(404).json({ error: 'User not found' });
-
-  const newRole = req.body.role;
-  if (!['admin', 'member'].includes(newRole)) return res.status(400).json({ error: 'Invalid role' });
-  target.role = newRole;
-  target.permissions = defaultPermissions(newRole);
-  saveRooms();
-  broadcastRoom(room.id, 'users_updated', { users: room.users });
-  broadcastRoom(room.id, 'activity', { text: `${actor.name} set ${target.name} as ${newRole}` });
-  res.json({ user: target });
-});
-
-// Rename room / change expiry
+// Rename room / change expiry — owner only
 app.patch('/api/rooms/:roomId', (req, res) => {
   const room = getRoom(req.params.roomId);
   if (!room) return res.status(404).json({ error: 'Room not found' });
-  const userId = req.body.userId;
-  const user = getUser(room, userId);
-  if (!user || (user.role !== 'owner' && user.role !== 'admin')) return res.status(403).json({ error: 'Not allowed' });
+  const user = getUser(room, req.body.userId);
+  if (!user || user.role !== 'owner') return res.status(403).json({ error: 'Only the owner can change room settings' });
 
   let changed = false;
   if (typeof req.body.name === 'string') {
@@ -655,7 +755,6 @@ app.patch('/api/rooms/:roomId', (req, res) => {
     if (newName && newName !== room.name) { room.name = newName; changed = true; }
   }
   if (req.body.expiresInHours != null) {
-    if (user.role !== 'owner') return res.status(403).json({ error: 'Only the owner can change expiry' });
     const hours = Number(req.body.expiresInHours);
     if (Number.isFinite(hours) && hours > 0 && hours <= MAX_EXPIRY_HOURS) {
       room.expiresAt = Date.now() + Math.round(hours * 60 * 60 * 1000);
@@ -665,7 +764,6 @@ app.patch('/api/rooms/:roomId', (req, res) => {
     }
   }
   if (req.body.expiresAt != null) {
-    if (user.role !== 'owner') return res.status(403).json({ error: 'Only the owner can change expiry' });
     const ts = Number(req.body.expiresAt);
     const now = Date.now();
     if (Number.isFinite(ts) && ts > now && ts - now <= MAX_EXPIRY_HOURS * 3600000) {
@@ -693,18 +791,14 @@ app.delete('/api/rooms/:roomId', (req, res) => {
   if (!user || user.role !== 'owner') return res.status(403).json({ error: 'Only the owner can delete the room' });
 
   const roomId = room.id;
-  io.to('room:' + roomId).emit('room_deleted', { reason: 'deleted' });
-  io.to('room:' + roomId).socketsLeave('room:' + roomId);
+  notifyRoomGone(roomId, 'deleted');
   deleteRoom(roomId);
   saveRooms();
   res.json({ ok: true });
 });
 
-// ---------- Chat: delete (unsend) message ----------
-// Rules:
-//  - A user can delete their own messages (unsend)
-//  - Owner can delete any message
-//  - Admins can delete messages by members (but not owner messages, not other admins' messages)
+// Delete (unsend) message
+// Owner can delete any message; members can unsend their own.
 app.delete('/api/rooms/:roomId/messages/:msgId', (req, res) => {
   const room = getRoom(req.params.roomId);
   if (!room) return res.status(404).json({ error: 'Room not found' });
@@ -716,13 +810,7 @@ app.delete('/api/rooms/:roomId/messages/:msgId', (req, res) => {
   if (msgIdx === -1) return res.status(404).json({ error: 'Message not found' });
   const msg = room.messages[msgIdx];
 
-  let allowed = false;
-  if (actor.role === 'owner') allowed = true;
-  else if (msg.userId === userId) allowed = true;
-  else if (actor.role === 'admin') {
-    const author = getUser(room, msg.userId);
-    if (author && author.role === 'member') allowed = true;
-  }
+  const allowed = actor.role === 'owner' || msg.userId === userId;
   if (!allowed) return res.status(403).json({ error: 'You cannot delete this message' });
 
   room.messages.splice(msgIdx, 1);
@@ -735,6 +823,28 @@ app.delete('/api/rooms/:roomId/messages/:msgId', (req, res) => {
 io.on('connection', (socket) => {
   let currentRoom = null;
   let currentUserId = null;
+  let currentPendingId = null;
+
+  socket.on('wait_approval', ({ roomId, pendingId }) => {
+    const room = getRoom(roomId);
+    if (!room || !pendingId) {
+      socket.emit('join_rejected', { reason: 'not_found' });
+      return;
+    }
+    const user = getUser(room, pendingId);
+    if (user) {
+      socket.emit('join_approved', roomPublicData(room, pendingId));
+      return;
+    }
+    const pending = getPending(room, pendingId);
+    if (!pending) {
+      socket.emit('join_rejected', { reason: 'not_found' });
+      return;
+    }
+    socket.join('pending:' + pendingId);
+    currentPendingId = pendingId;
+    socket.emit('waiting', { pendingId, name: pending.name, roomName: room.name });
+  });
 
   socket.on('join_room', ({ roomId, userId }) => {
     const room = getRoom(roomId);
@@ -748,17 +858,27 @@ io.on('connection', (socket) => {
     const wasOffline = !onlineUsers[roomId] || !onlineUsers[roomId][userId];
     setOnline(roomId, userId, socket.id);
 
-    // Notify others of join
     const user = getUser(room, userId);
+    const presenceUsers = room.users.map(u => ({ ...u, online: !!onlineUsers[roomId][u.id] }));
     if (wasOffline) {
-      io.to('room:' + roomId).emit('presence', { users: room.users.map(u => ({ ...u, online: !!onlineUsers[roomId][u.id] })) });
+      io.to('room:' + roomId).emit('presence', { users: presenceUsers });
       io.to('room:' + roomId).emit('activity', { text: `${user.name} joined the room` });
     } else {
-      socket.emit('presence', { users: room.users.map(u => ({ ...u, online: !!onlineUsers[roomId][u.id] })) });
+      socket.emit('presence', { users: presenceUsers });
+    }
+
+    if (user.role === 'owner') {
+      socket.emit('pending_updated', { pendingUsers: room.pendingUsers || [] });
+    }
+
+    const seenUpdates = markMessagesSeen(room, user);
+    if (seenUpdates.length) {
+      saveRooms();
+      io.to('room:' + roomId).emit('seen_update', { updates: seenUpdates });
     }
   });
 
-  socket.on('send_message', ({ roomId, userId, text }) => {
+  socket.on('send_message', ({ roomId, userId, text, replyToId }) => {
     const room = getRoom(roomId);
     if (!room) return;
     const user = getUser(room, userId);
@@ -769,18 +889,55 @@ io.on('connection', (socket) => {
     }
     const cleanText = String(text || '').slice(0, 2000).trim();
     if (!cleanText) return;
+
+    let replyTo = null;
+    if (replyToId) {
+      const orig = room.messages.find(m => m.id === replyToId);
+      if (orig) {
+        replyTo = {
+          id: orig.id,
+          userName: orig.userName,
+          text: String(orig.text || '').slice(0, 200)
+        };
+      }
+    }
+
     const msg = {
       id: uid(),
       userId,
       userName: user.name,
       role: user.role,
       text: cleanText,
-      ts: Date.now()
+      ts: Date.now(),
+      replyTo,
+      seenBy: {}
     };
     room.messages.push(msg);
     if (room.messages.length > 500) room.messages = room.messages.slice(-500);
     saveRooms();
     io.to('room:' + roomId).emit('new_message', msg);
+  });
+
+  socket.on('mark_seen', ({ roomId, userId, messageIds }) => {
+    const room = getRoom(roomId);
+    if (!room) return;
+    const user = getUser(room, userId);
+    if (!user) return;
+    const now = Date.now();
+    const updates = [];
+    const filter = Array.isArray(messageIds) && messageIds.length ? new Set(messageIds) : null;
+    for (const msg of room.messages) {
+      if (filter && !filter.has(msg.id)) continue;
+      if (msg.userId === userId) continue;
+      if (!msg.seenBy || typeof msg.seenBy !== 'object') msg.seenBy = {};
+      if (msg.seenBy[userId]) continue;
+      msg.seenBy[userId] = { ts: now, name: user.name };
+      updates.push({ messageId: msg.id, userId, ts: now, name: user.name });
+    }
+    if (updates.length) {
+      saveRooms();
+      io.to('room:' + roomId).emit('seen_update', { updates });
+    }
   });
 
   socket.on('typing', ({ roomId, userId, isTyping }) => {
@@ -797,12 +954,18 @@ io.on('connection', (socket) => {
       setOffline(currentRoom, currentUserId);
       if (room) {
         const user = getUser(room, currentUserId);
-        io.to('room:' + currentRoom).emit('presence', { users: room.users.map(u => ({ ...u, online: !!(onlineUsers[currentRoom] && onlineUsers[currentRoom][u.id]) })) });
+        io.to('room:' + currentRoom).emit('presence', {
+          users: room.users.map(u => ({
+            ...u,
+            online: !!(onlineUsers[currentRoom] && onlineUsers[currentRoom][u.id])
+          }))
+        });
         if (user) {
           io.to('room:' + currentRoom).emit('activity', { text: `${user.name} went offline` });
         }
       }
     }
+    currentPendingId = null;
   });
 });
 

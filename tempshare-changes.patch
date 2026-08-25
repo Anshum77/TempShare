@@ -1,0 +1,2419 @@
+diff --git a/README.md b/README.md
+index 1b1b866..7dfbe83 100644
+--- a/README.md
++++ b/README.md
+@@ -3,27 +3,29 @@
+ > **Temporary, link-based collaborative workspaces.**
+ > Share files, organize folders, and chat — all in one ephemeral room. No signup. No install.
+ 
+-Inspired by a mix of Google Drive + WhatsApp + Discord, but ephemeral and link-based. Anyone you share the link with can join instantly. The owner (and promoted admins) control who can chat, upload, delete, and manage folders.
++Inspired by a mix of Google Drive + WhatsApp + Discord, but ephemeral and link-based. Anyone you share the link with can *request* to join. The owner admits them from a waiting room. Once inside, everyone can download files; only the owner has full administrative control.
+ 
+ ---
+ 
+ ## ✨ Features
+ 
+ - 🔗 **One-click room creation** — click "Create a Room", get a shareable link instantly.
+-- 👥 **Join by link** — no accounts, no passwords (display name only).
+-- 📁 **File & folder sharing** — upload files or entire folders (subfolder structure preserved), create folders, organize together.
++- 🚪 **Owner waiting room** — people who open the invite sit in a waiting room until the owner admits or declines them.
++- 👥 **Two roles only**
++  - **Owner** — full administrative control (admit/deny, rename room, change expiry, delete files/folders, delete the room).
++  - **Member** — chat, upload, and download. Cannot delete, rename, or create folders.
++- 📁 **File & folder sharing** — upload files or entire folders (subfolder structure preserved).
+ - 📤 **Drag & drop uploads** — drop files *or* entire folders anywhere in the file panel; subfolders are recreated exactly.
++- ⬇️ **Downloads for everyone in the room** — any admitted member can download a file or a folder ZIP.
+ - 💬 **Real-time chat** — powered by Socket.IO, with typing indicators.
+-- 🛡️ **Role-based permissions (RBAC):**
+-  - **Owner** — full control, can promote/demote admins.
+-  - **Admin** — can manage member permissions and room settings.
+-  - **Member** — permissions configurable per user (chat / upload / create folders / delete / rename).
++- ↩️ **Reply to messages** — WhatsApp / Instagram-style quote replies. Tap the quote to jump to the original.
++- 👁️ **Seen details** — double-ticks on your messages; tap them to see **who saw it and at what time**.
+ - 🟢 **Online presence** — see who's currently in the room.
+ - ⏳ **Custom auto-expiry (1 hour → 1 year)** — choose when creating, owner can change anytime; everything (files + chat) is permanently wiped when the timer runs out.
+-- 🗑️ **Owner "Delete Room"** — instantly destroy the room and all its data; everyone gets disconnected.
++- 🚪 **Leave / Delete** — members can leave (they must be re-approved to come back). If the owner leaves or hits Delete, the room and all files are destroyed.
+ - 📱 **Responsive UI** — works on desktop and mobile.
+ - 📋 **Copy invite link** button for easy sharing.
+-- 🕐 Activity feed showing who joined / uploaded / changed roles / updated settings.
++- 🕐 Activity feed showing who joined / uploaded / left / updated settings.
+ 
+ ---
+ 
+@@ -70,7 +72,8 @@ temp-share/
+ │   │   └── style.css      # Custom styles (Tailwind via CDN)
+ │   └── js/
+ │       ├── app.js         # Landing page logic
+-│       └── room.js        # Room page logic (chat, files, permissions)
++│       ├── dialog.js      # Custom confirm/prompt dialogs
++│       └── room.js        # Room page logic (chat, files, waiting room)
+ ├── uploads/               # Uploaded files (organized by room ID) — created at runtime
+ └── data/
+     └── rooms.json         # Persisted room/user/file/chat metadata
+@@ -82,13 +85,12 @@ temp-share/
+ 
+ 1. Open the homepage, enter your name, pick an **auto-delete** duration (1 hour → 1 year), then click **Create a Room**.
+ 2. You'll be taken to your new room. Click **Copy Link** and share it with others.
+-3. Others open the link, enter their name, and land in the same room.
+-4. **Upload files** (button or drag & drop, including whole folders), **create folders**, and **chat** in the right panel.
+-5. The header shows a live countdown ⏳ until the room expires. As **owner**, click the pencil icon next to it to change the expiry anytime.
+-6. As owner, click the **red Delete button** in the header to instantly wipe the room and disconnect everyone (double-confirm).
+-7. As owner/admin, click the ⚙️ icon next to any user's name in the sidebar to:
+-   - Toggle individual permissions (chat, upload, delete, create folder, rename).
+-   - Promote to admin / demote to member (owner-only).
++3. Others open the link, enter their name, and land in the **waiting room**.
++4. As owner, admit or deny them from the **Waiting Room** panel in the sidebar.
++5. Once inside: **upload files** (button or drag & drop, including whole folders) and **chat**. Anyone in the room can download files or a folder ZIP.
++6. Hover a chat message and hit the reply arrow to quote it. Tap the double-ticks on your own messages to see who read them and when.
++7. The header shows a live countdown ⏳ until the room expires. As **owner**, click the pencil icon next to it to change the expiry anytime.
++8. **Members** click **Leave** to exit (they will need approval to rejoin). **Owner** clicks **Delete** — or leaving as owner — which wipes the room and disconnects everyone.
+ 
+ ---
+ 
+@@ -142,23 +144,34 @@ server {
+       {
+         "id": "...",
+         "name": "Alex",
+-        "role": "owner", // owner | admin | member
++        "role": "owner", // owner | member
+         "permissions": {
+           "can_chat": true,
+           "can_upload": true,
+-          "can_delete": true,
++          "can_delete": true,          // owner only in practice
+           "can_create_folder": true,
+           "can_rename": true
+         },
+         "joinedAt": 1700000000000
+       }
+     ],
++    "pendingUsers": [
++      { "id": "...", "name": "Sam", "requestedAt": 1700000100000 }
++    ],
+     "files": [
+-      { "id": "root", "name": "root", "type": "folder", "parentId": null, ... },
++      { "id": "root", "name": "root", "type": "folder", "parentId": null },
+       { "id": "...", "type": "file", "name": "report.pdf", "parentId": "root", "size": 12345, "storageName": "...", "uploadedBy": "..." }
+     ],
+     "messages": [
+-      { "id": "...", "userId": "...", "userName": "Alex", "text": "Hello!", "ts": 1700000000000 }
++      {
++        "id": "...",
++        "userId": "...",
++        "userName": "Alex",
++        "text": "Hello!",
++        "ts": 1700000000000,
++        "replyTo": { "id": "...", "userName": "Sam", "text": "Did you upload it?" },
++        "seenBy": { "<userId>": { "ts": 1700000005000, "name": "Sam" } }
++      }
+     ]
+   }
+ }
+@@ -173,7 +186,6 @@ server {
+ - ☁️ S3 / Cloudinary / Firebase Storage backend for uploads
+ - 💾 Persistent database (MongoDB / PostgreSQL / Redis) instead of JSON file
+ - 🔔 Browser notifications for mentions
+-- 👀 Read receipts
+ - 🧭 File previews (images, PDFs, text)
+ - 🔗 File sharing links (per-file public URLs)
+ - 🌙 Dark/light theme toggle
+diff --git a/public/css/style.css b/public/css/style.css
+index b513db1..65d850d 100644
+--- a/public/css/style.css
++++ b/public/css/style.css
+@@ -32,12 +32,60 @@
+   border-radius: 14px 14px 4px 14px;
+ }
+ 
++/* Quoted reply inside a bubble */
++.reply-quote {
++  display: block;
++  border-left: 3px solid rgba(255,255,255,0.45);
++  background: rgba(0,0,0,0.18);
++  border-radius: 6px;
++  padding: 6px 8px;
++  margin-bottom: 6px;
++  cursor: pointer;
++  text-align: left;
++}
++.bubble-other .reply-quote {
++  border-left-color: #f472b6;
++  background: rgba(15,23,42,0.45);
++}
++.reply-quote-name {
++  font-size: 11px;
++  font-weight: 700;
++  opacity: 0.95;
++}
++.reply-quote-text {
++  font-size: 11px;
++  opacity: 0.8;
++  overflow: hidden;
++  text-overflow: ellipsis;
++  white-space: nowrap;
++  max-width: 220px;
++}
++
++/* Highlight a jumped-to message */
++.msg-highlight .bubble-me,
++.msg-highlight .bubble-other {
++  box-shadow: 0 0 0 2px #f472b6;
++}
++
++/* WhatsApp-style ticks */
++.ticks {
++  display: inline-flex;
++  align-items: center;
++  gap: 0;
++  line-height: 1;
++  cursor: pointer;
++  user-select: none;
++}
++.ticks svg { width: 16px; height: 16px; }
++.ticks.sent { color: #94a3b8; }
++.ticks.seen { color: #38bdf8; }
++
+ /* File item hover */
+ .file-item { transition: background 0.15s; }
+ .file-item:hover { background: rgba(148,163,184,0.08); }
+ .file-item.selected { background: rgba(236,72,153,0.15); }
+ 
+-/* Chat message delete button appears on hover */
++/* Chat message action buttons appear on hover */
+ .group-hover\/message:opacity-100 { opacity: 1 !important; }
+ 
+ /* Toast animation */
+@@ -48,7 +96,10 @@
+ }
+ 
+ /* Modal flex */
+-#permModal[style*="flex"], #nameModal[style*="flex"] { display: flex !important; }
++#expiryModal[style*="flex"],
++#seenModal[style*="flex"],
++#nameModal[style*="flex"],
++#waitingOverlay[style*="flex"] { display: flex !important; }
+ 
+ /* Mobile chat overlay adjustment */
+ @media (max-width: 1023px) {
+diff --git a/public/index.html b/public/index.html
+index 93a3951..9ac7edf 100644
+--- a/public/index.html
++++ b/public/index.html
+@@ -82,8 +82,8 @@
+     </div>
+     <div class="bg-white/5 rounded-2xl p-4 border border-white/10">
+       <div class="text-2xl mb-1">🛡️</div>
+-      <div class="font-semibold text-white">Role Controls</div>
+-      <div class="text-xs mt-1">Owners & admins decide who can chat, upload, delete.</div>
++      <div class="font-semibold text-white">Owner approval</div>
++      <div class="text-xs mt-1">Join requests wait in a room until the owner lets them in.</div>
+     </div>
+   </div>
+ 
+diff --git a/public/js/room.js b/public/js/room.js
+index 8db237a..5757b50 100644
+--- a/public/js/room.js
++++ b/public/js/room.js
+@@ -5,12 +5,15 @@ const socket = io();
+ let state = {
+   room: null,
+   userId: localStorage.getItem('ts_user_' + roomId) || null,
++  pendingId: localStorage.getItem('ts_pending_' + roomId) || null,
+   currentFolder: 'root',
+   folderPath: [],
+   typingTimeout: null,
+   isTyping: false,
+   sidebarOpen: false,
+-  expiryInterval: null
++  expiryInterval: null,
++  replyTo: null,
++  seenTarget: null
+ };
+ 
+ // DOM elements
+@@ -25,9 +28,14 @@ const els = {
+   expirySelect: document.getElementById('expirySelect'),
+   saveExpiryBtn: document.getElementById('saveExpiryBtn'),
+   deleteRoomBtn: document.getElementById('deleteRoomBtn'),
++  leaveRoomBtn: document.getElementById('leaveRoomBtn'),
+   copyLinkBtn: document.getElementById('copyLinkBtn'),
+   toggleSidebar: document.getElementById('toggleSidebar'),
+   sidebar: document.getElementById('sidebar'),
++  pendingSection: document.getElementById('pendingSection'),
++  pendingList: document.getElementById('pendingList'),
++  pendingCount: document.getElementById('pendingCount'),
++  pendingBadgeMobile: document.getElementById('pendingBadgeMobile'),
+   userList: document.getElementById('userList'),
+   userCount: document.getElementById('userCount'),
+   myInfo: document.getElementById('myInfo'),
+@@ -48,15 +56,19 @@ const els = {
+   chatMuted: document.getElementById('chatMuted'),
+   typingIndicator: document.getElementById('typingIndicator'),
+   activityBar: document.getElementById('activityBar'),
+-  permModal: document.getElementById('permModal'),
+-  closePermModal: document.getElementById('closePermModal'),
+-  permTitle: document.getElementById('permTitle'),
+-  permSubtitle: document.getElementById('permSubtitle'),
+-  permBody: document.getElementById('permBody'),
+-  permRoleSection: document.getElementById('permRoleSection'),
++  replyBar: document.getElementById('replyBar'),
++  replyToName: document.getElementById('replyToName'),
++  replyToText: document.getElementById('replyToText'),
++  cancelReplyBtn: document.getElementById('cancelReplyBtn'),
++  seenModal: document.getElementById('seenModal'),
++  seenBody: document.getElementById('seenBody'),
++  closeSeenModal: document.getElementById('closeSeenModal'),
+   nameModal: document.getElementById('nameModal'),
+   joinNameInput: document.getElementById('joinNameInput'),
+   joinNameBtn: document.getElementById('joinNameBtn'),
++  waitingOverlay: document.getElementById('waitingOverlay'),
++  waitingText: document.getElementById('waitingText'),
++  cancelWaitBtn: document.getElementById('cancelWaitBtn'),
+ };
+ 
+ // ---------- Utilities ----------
+@@ -112,7 +124,7 @@ async function changeExpiry(hours) {
+     updateExpiryBadge();
+     els.expiryModal.style.display = 'none';
+     showToast('Expiry updated');
+-  } catch(e) { showToast(e.message, true); }
++  } catch (e) { showToast(e.message, true); }
+ }
+ 
+ async function deleteRoom() {
+@@ -133,9 +145,37 @@ async function deleteRoom() {
+       method: 'DELETE',
+       body: JSON.stringify({ userId: state.userId })
+     });
++    clearIdentity();
+     showToast('Room deleted');
+     setTimeout(() => window.location.href = '/', 1000);
+-  } catch(e) { showToast(e.message, true); }
++  } catch (e) { showToast(e.message, true); }
++}
++
++async function leaveRoom() {
++  const isOwner = me() && me().role === 'owner';
++  if (isOwner) return deleteRoom();
++  const ok = await Dialog.confirm(
++    'You will need the owner to approve you again if you want to come back.',
++    'Leave this room?',
++    { okText: 'Leave', danger: true }
++  );
++  if (!ok) return;
++  try {
++    await api(`/api/rooms/${roomId}/leave`, {
++      method: 'POST',
++      body: JSON.stringify({ userId: state.userId })
++    });
++    clearIdentity();
++    showToast('You left the room');
++    setTimeout(() => window.location.href = '/', 800);
++  } catch (e) { showToast(e.message, true); }
++}
++
++function clearIdentity() {
++  localStorage.removeItem('ts_user_' + roomId);
++  localStorage.removeItem('ts_pending_' + roomId);
++  state.userId = null;
++  state.pendingId = null;
+ }
+ 
+ function showToast(msg, isError = false) {
+@@ -179,18 +219,24 @@ function formatTime(ts) {
+   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+ }
+ 
++function formatSeenAt(ts) {
++  const d = new Date(ts);
++  const now = new Date();
++  const sameDay = d.toDateString() === now.toDateString();
++  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
++  if (sameDay) return time;
++  return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ', ' + time;
++}
++
+ function escapeHtml(s) {
+   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+ }
+ 
+ // ---------- File-type icons ----------
+-// Returns an HTML string: colored rounded tile with short extension label + generic fallback.
+ const ICON_STYLES = {
+-  // media
+   image:    { bg: '#a78bfa', fg: '#1e1b4b', label: 'IMG' },
+   video:    { bg: '#f472b6', fg: '#500724', label: 'VID' },
+   audio:    { bg: '#34d399', fg: '#064e3b', label: 'AUD' },
+-  // documents
+   pdf:      { bg: '#ef4444', fg: '#fff',    label: 'PDF' },
+   doc:      { bg: '#3b82f6', fg: '#fff',    label: 'DOC' },
+   docx:     { bg: '#2563eb', fg: '#fff',    label: 'DOCX' },
+@@ -203,7 +249,6 @@ const ICON_STYLES = {
+   txt:      { bg: '#94a3b8', fg: '#0f172a', label: 'TXT' },
+   md:       { bg: '#64748b', fg: '#fff',    label: 'MD' },
+   rtf:      { bg: '#94a3b8', fg: '#0f172a', label: 'RTF' },
+-  // code
+   js:       { bg: '#fde047', fg: '#713f12', label: 'JS'  },
+   mjs:      { bg: '#fde047', fg: '#713f12', label: 'MJS' },
+   cjs:      { bg: '#fde047', fg: '#713f12', label: 'CJS' },
+@@ -243,7 +288,6 @@ const ICON_STYLES = {
+   sql:      { bg: '#0891b2', fg: '#fff',    label: 'SQL' },
+   vue:      { bg: '#22c55e', fg: '#052e16', label: 'VUE' },
+   svelte:   { bg: '#f97316', fg: '#fff',    label: 'SVL' },
+-  // archives
+   zip:      { bg: '#a16207', fg: '#fef3c7', label: 'ZIP' },
+   rar:      { bg: '#a16207', fg: '#fef3c7', label: 'RAR' },
+   '7z':     { bg: '#a16207', fg: '#fef3c7', label: '7Z'  },
+@@ -251,17 +295,14 @@ const ICON_STYLES = {
+   gz:       { bg: '#854d0e', fg: '#fef3c7', label: 'GZ'  },
+   bz2:      { bg: '#854d0e', fg: '#fef3c7', label: 'BZ2' },
+   xz:       { bg: '#854d0e', fg: '#fef3c7', label: 'XZ'  },
+-  // executables / binaries
+   exe:      { bg: '#475569', fg: '#fff',    label: 'EXE' },
+   msi:      { bg: '#475569', fg: '#fff',    label: 'MSI' },
+   dll:      { bg: '#334155', fg: '#fff',    label: 'DLL' },
+   bin:      { bg: '#1e293b', fg: '#cbd5e1', label: 'BIN' },
+-  // fonts
+   ttf:      { bg: '#db2777', fg: '#fff',    label: 'TTF' },
+   otf:      { bg: '#db2777', fg: '#fff',    label: 'OTF' },
+   woff:     { bg: '#be185d', fg: '#fff',    label: 'WOFF' },
+   woff2:    { bg: '#be185d', fg: '#fff',    label: 'WOFF2' },
+-  // other
+   iso:      { bg: '#64748b', fg: '#fff',    label: 'ISO' },
+   dmg:      { bg: '#64748b', fg: '#fff',    label: 'DMG' }
+ };
+@@ -269,9 +310,6 @@ const ICON_STYLES = {
+ const IMAGE_EXTS = new Set(['png','jpg','jpeg','gif','webp','svg','bmp','ico','tiff','tif','avif','heic','heif']);
+ const VIDEO_EXTS = new Set(['mp4','mov','avi','mkv','webm','flv','wmv','m4v','mpg','mpeg','3gp']);
+ const AUDIO_EXTS = new Set(['mp3','wav','ogg','flac','m4a','aac','wma','aiff','opus']);
+-const CODE_EXTS = new Set(['js','mjs','cjs','ts','jsx','tsx','html','htm','css','scss','sass','less','json','xml','yaml','yml','py','java','c','cpp','cc','cxx','h','hpp','cs','go','rs','rb','php','swift','kt','sh','bash','zsh','bat','ps1','sql','vue','svelte']);
+-const DOC_EXTS = new Set(['pdf','doc','docx','xls','xlsx','csv','ppt','pptx','txt','md','rtf']);
+-const ARCHIVE_EXTS = new Set(['zip','rar','7z','tar','gz','bz2','xz']);
+ 
+ function iconInfoFor(name) {
+   const dot = name.lastIndexOf('.');
+@@ -281,14 +319,12 @@ function iconInfoFor(name) {
+   if (VIDEO_EXTS.has(ext)) return { ...ICON_STYLES.video, label: ext.slice(0,4).toUpperCase() };
+   if (AUDIO_EXTS.has(ext)) return { ...ICON_STYLES.audio, label: ext.slice(0,3).toUpperCase() };
+   if (ICON_STYLES[ext]) return ICON_STYLES[ext];
+-  // Generic fallback: first 3-4 chars of extension
+   return { bg: '#475569', fg: '#f1f5f9', label: ext.slice(0,4).toUpperCase() };
+ }
+ 
+ function fileIconHTML(name) {
+   const info = iconInfoFor(name);
+   const label = escapeHtml(info.label);
+-  // Use inline styles so tailwind config doesn't need extension; font slightly condensed.
+   return `<span class="inline-flex items-center justify-center rounded-md font-bold text-[10px] tracking-tight" style="background:${info.bg};color:${info.fg};min-width:34px;height:28px;padding:0 6px;">${label}</span>`;
+ }
+ 
+@@ -297,61 +333,139 @@ function folderIconHTML() {
+ }
+ 
+ function me() {
+-  return state.room.users.find(u => u.id === state.userId);
++  return state.room && state.room.users.find(u => u.id === state.userId);
+ }
+ 
+ function can(perm) {
+   const m = me();
+   if (!m) return false;
+   if (m.role === 'owner') return true;
+-  if (m.role === 'admin') {
+-    // admins can manage permissions by default (but cannot change other admins)
+-    if (perm === 'manage_permissions') return true;
+-    return m.permissions[perm] !== false;
+-  }
+   return m.permissions[perm] === true;
+ }
+ 
++function ticksSVG() {
++  return `<svg viewBox="0 0 16 15" fill="currentColor" aria-hidden="true"><path d="M15.01 3.316l-.478-.372a.365.365 0 00-.51.063L8.666 9.88a.32.32 0 01-.484.032l-.358-.325a.32.32 0 00-.484.032l-.378.48a.418.418 0 00.036.54l1.32 1.267c.16.15.41.14.56-.02l6.326-8.1a.366.366 0 00-.064-.512zm-4.1 0l-.478-.372a.365.365 0 00-.51.063L4.566 9.88a.32.32 0 01-.484.032L1.892 7.77a.366.366 0 00-.516.005l-.423.433a.364.364 0 00.006.514l3.255 3.185c.16.15.41.14.56-.02l6.326-8.1a.365.365 0 00-.064-.512z"/></svg>`;
++}
++
++// ---------- Waiting / name overlays ----------
++function showNameModal() {
++  els.nameModal.style.display = 'flex';
++  els.waitingOverlay.style.display = 'none';
++  els.waitingOverlay.classList.add('hidden');
++  setTimeout(() => els.joinNameInput.focus(), 80);
++}
++
++function hideNameModal() {
++  els.nameModal.style.display = 'none';
++}
++
++function showWaiting(name, roomName) {
++  hideNameModal();
++  const who = name ? ` as ${name}` : '';
++  const room = roomName ? ` “${roomName}”` : '';
++  els.waitingText.textContent = `Your request${who} was sent${room}. You'll enter as soon as the owner lets you in.`;
++  els.waitingOverlay.classList.remove('hidden');
++  els.waitingOverlay.style.display = 'flex';
++}
++
++function hideWaiting() {
++  els.waitingOverlay.classList.add('hidden');
++  els.waitingOverlay.style.display = 'none';
++}
++
++function enterAsMember(data) {
++  state.room = data;
++  state.userId = data.myUserId;
++  state.pendingId = null;
++  localStorage.setItem('ts_user_' + roomId, state.userId);
++  localStorage.removeItem('ts_pending_' + roomId);
++  hideNameModal();
++  hideWaiting();
++  initRoom();
++}
++
+ // ---------- Rendering ----------
+ function renderHeader() {
+   els.roomCode.textContent = '#' + state.room.id;
+   els.roomName.value = state.room.name;
+-  const editable = me() && (me().role === 'owner' || me().role === 'admin');
+-  els.roomName.readOnly = !editable;
+-  els.roomName.title = editable ? 'Click to rename room' : '';
+-
+-  // Owner controls
+   const isOwner = me() && me().role === 'owner';
++  els.roomName.readOnly = !isOwner;
++  els.roomName.title = isOwner ? 'Click to rename room' : '';
++
+   els.changeExpiryBtn.classList.toggle('hidden', !isOwner);
+   els.deleteRoomBtn.classList.toggle('hidden', !isOwner);
+   els.deleteRoomBtn.classList.toggle('flex', isOwner);
++  els.leaveRoomBtn.classList.toggle('hidden', isOwner);
++  els.leaveRoomBtn.classList.toggle('flex', !isOwner);
+   els.expiryBadge.classList.remove('hidden');
+   els.expiryBadge.classList.add('flex');
+ 
+-  // Start/refresh countdown
+   clearInterval(state.expiryInterval);
+   updateExpiryBadge();
+   state.expiryInterval = setInterval(updateExpiryBadge, 1000);
+ }
+ 
++function renderPending() {
++  const isOwner = me() && me().role === 'owner';
++  const list = (isOwner && state.room.pendingUsers) ? state.room.pendingUsers : [];
++  const has = list.length > 0;
++  els.pendingSection.classList.toggle('hidden', !has);
++  if (els.pendingBadgeMobile) els.pendingBadgeMobile.classList.toggle('hidden', !has);
++  els.pendingCount.textContent = `(${list.length})`;
++  els.pendingList.innerHTML = '';
++  if (!has) return;
++
++  for (const p of list) {
++    const row = document.createElement('div');
++    row.className = 'bg-amber-500/10 border border-amber-500/20 rounded-xl p-2.5 fade-in';
++    row.innerHTML = `
++      <div class="flex items-center gap-2 mb-2">
++        <div class="w-8 h-8 rounded-full bg-amber-500/30 flex items-center justify-center font-bold text-sm text-amber-100">
++          ${escapeHtml((p.name || '?')[0] || '?').toUpperCase()}
++        </div>
++        <div class="flex-1 min-w-0">
++          <div class="font-medium text-sm truncate">${escapeHtml(p.name)}</div>
++          <div class="text-[11px] text-amber-200/70">Wants to join · ${timeAgo(p.requestedAt)}</div>
++        </div>
++      </div>
++      <div class="flex gap-2">
++        <button class="admit-btn flex-1 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs font-semibold">Admit</button>
++        <button class="deny-btn flex-1 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-xs font-semibold">Deny</button>
++      </div>
++    `;
++    row.querySelector('.admit-btn').addEventListener('click', () => decidePending(p.id, true));
++    row.querySelector('.deny-btn').addEventListener('click', () => decidePending(p.id, false));
++    els.pendingList.appendChild(row);
++  }
++}
++
++async function decidePending(pendingId, admit) {
++  try {
++    await api(`/api/rooms/${roomId}/${admit ? 'approve' : 'reject'}`, {
++      method: 'POST',
++      body: JSON.stringify({ actorUserId: state.userId, pendingId })
++    });
++    state.room.pendingUsers = (state.room.pendingUsers || []).filter(p => p.id !== pendingId);
++    renderPending();
++    showToast(admit ? 'Admitted' : 'Declined');
++  } catch (e) { showToast(e.message, true); }
++}
++
+ function renderUsers() {
+-  const sorted = [...state.room.users].sort((a,b) => {
+-    const order = { owner: 0, admin: 1, member: 2 };
+-    if (order[a.role] !== order[b.role]) return order[a.role] - order[b.role];
++  const sorted = [...state.room.users].sort((a, b) => {
++    const order = { owner: 0, member: 1 };
++    if ((order[a.role] ?? 9) !== (order[b.role] ?? 9)) return (order[a.role] ?? 9) - (order[b.role] ?? 9);
+     return a.name.localeCompare(b.name);
+   });
+   els.userCount.textContent = `(${state.room.users.length})`;
+   els.userList.innerHTML = '';
+   for (const u of sorted) {
+     const isMe = u.id === state.userId;
+-    const roleBadge = {
+-      owner: '<span class="text-[10px] font-bold bg-gradient-to-r from-pink-600 to-purple-600 px-2 py-0.5 rounded-full">OWNER</span>',
+-      admin: '<span class="text-[10px] font-bold bg-indigo-600 px-2 py-0.5 rounded-full">ADMIN</span>',
+-      member: ''
+-    }[u.role];
+-    const canManage = me() && (me().role === 'owner' || (me().role === 'admin' && u.role === 'member')) && !isMe;
++    const roleBadge = u.role === 'owner'
++      ? '<span class="text-[10px] font-bold bg-gradient-to-r from-pink-600 to-purple-600 px-2 py-0.5 rounded-full">OWNER</span>'
++      : '';
+     const row = document.createElement('div');
+-    row.className = 'file-item flex items-center gap-3 p-2.5 rounded-lg cursor-pointer fade-in';
++    row.className = 'file-item flex items-center gap-3 p-2.5 rounded-lg fade-in';
+     row.innerHTML = `
+       <div class="relative">
+         <div class="w-9 h-9 rounded-full flex items-center justify-center font-bold text-sm ${isMe ? 'bg-gradient-to-br from-pink-500 to-indigo-500' : 'bg-slate-700'}">
+@@ -366,10 +480,7 @@ function renderUsers() {
+         </div>
+         <div class="text-[11px] text-slate-500">${u.online ? 'Online' : 'Offline'}</div>
+       </div>
+-      ${canManage ? '<button class="perm-btn text-slate-400 hover:text-white p-1" title="Manage permissions"><svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg></button>' : ''}
+     `;
+-    const btn = row.querySelector('.perm-btn');
+-    if (btn) btn.addEventListener('click', (e) => { e.stopPropagation(); openPermModal(u); });
+     els.userList.appendChild(row);
+   }
+ 
+@@ -400,7 +511,7 @@ function navigateTo(folderId) {
+ function navigateUp() {
+   if (!state.room) return;
+   const cur = state.room.files.find(f => f.id === state.currentFolder);
+-  if (!cur || !cur.parentId) return; // at root
++  if (!cur || !cur.parentId) return;
+   state.currentFolder = cur.parentId;
+   renderFiles();
+ }
+@@ -420,9 +531,7 @@ function renderBreadcrumb() {
+     btn.className = 'px-2 py-1 rounded hover:bg-slate-700 transition truncate max-w-[200px] ' + (isLast ? 'text-white font-semibold cursor-default' : 'text-slate-400 hover:text-slate-200');
+     btn.textContent = i === 0 ? '📁 Root' : '📁 ' + f.name;
+     btn.title = i === 0 ? 'Root' : f.name;
+-    if (!isLast) {
+-      btn.addEventListener('click', () => navigateTo(f.id));
+-    }
++    if (!isLast) btn.addEventListener('click', () => navigateTo(f.id));
+     els.breadcrumb.appendChild(btn);
+     if (!isLast) {
+       const sep = document.createElement('span');
+@@ -431,7 +540,6 @@ function renderBreadcrumb() {
+       els.breadcrumb.appendChild(sep);
+     }
+   });
+-  // Update back button state
+   const atRoot = state.currentFolder === 'root';
+   els.backBtn.disabled = atRoot;
+   els.backBtn.title = atRoot ? 'Already at root' : 'Go to parent folder (Backspace / Alt+↑)';
+@@ -440,8 +548,7 @@ function renderBreadcrumb() {
+ function renderFiles() {
+   renderBreadcrumb();
+   const children = state.room.files.filter(f => f.parentId === state.currentFolder);
+-  // Sort: folders first, then files, alphabetical
+-  children.sort((a,b) => {
++  children.sort((a, b) => {
+     if (a.type !== b.type) return a.type === 'folder' ? -1 : 1;
+     return a.name.localeCompare(b.name);
+   });
+@@ -460,7 +567,6 @@ function renderFiles() {
+     const canRename = can('can_rename') || can('can_upload');
+     const uploader = node.uploadedByName || node.createdByName || '';
+     const date = node.uploadedAt || node.createdAt;
+-
+     const isFolder = node.type === 'folder';
+     const iconHTML = isFolder ? folderIconHTML() : fileIconHTML(node.name);
+ 
+@@ -501,7 +607,6 @@ function renderFiles() {
+       }
+     };
+     nameEl.addEventListener('click', openNode);
+-    // Make the whole row clickable for folders
+     if (isFolder) {
+       row.classList.add('cursor-pointer');
+       row.addEventListener('click', (e) => {
+@@ -517,9 +622,7 @@ function renderFiles() {
+     if (renameBtn) renameBtn.addEventListener('click', async (e) => {
+       e.stopPropagation();
+       const newName = await Dialog.prompt(`Enter a new name for "${node.name}":`, node.name, 'Rename');
+-      if (newName && newName !== node.name) {
+-        renameFile(node.id, newName);
+-      }
++      if (newName && newName !== node.name) renameFile(node.id, newName);
+     });
+ 
+     const delBtn = row.querySelector('.delete-btn');
+@@ -536,6 +639,14 @@ function renderFiles() {
+   }
+ }
+ 
++function seenEntries(msg) {
++  const raw = msg.seenBy || {};
++  return Object.entries(raw).map(([id, info]) => {
++    if (info && typeof info === 'object') return { id, ts: info.ts, name: info.name };
++    return { id, ts: info, name: null };
++  }).filter(e => e.id !== msg.userId);
++}
++
+ function renderMessages() {
+   const wasAtBottom = els.messages.scrollHeight - els.messages.scrollTop - els.messages.clientHeight < 80;
+   els.messages.innerHTML = '';
+@@ -543,26 +654,51 @@ function renderMessages() {
+   const myId = state.userId;
+ 
+   for (const msg of state.room.messages) {
+-    const isMe = msg.userId === state.userId;
+-    // Delete permission: own message, or owner (always), or admin deleting a member's message
+-    const author = state.room.users.find(u => u.id === msg.userId);
+-    const authorRole = author ? author.role : 'member';
+-    const canDelete = isMe || myRole === 'owner' || (myRole === 'admin' && authorRole === 'member');
++    const isMe = msg.userId === myId;
++    const canDelete = isMe || myRole === 'owner';
++    const seen = seenEntries(msg);
++    const seenClass = seen.length ? 'seen' : 'sent';
++    const reply = msg.replyTo;
+ 
+     const wrapper = document.createElement('div');
+     wrapper.className = 'flex fade-in group/message relative ' + (isMe ? 'justify-end' : 'justify-start');
++    wrapper.dataset.msgId = msg.id;
+     wrapper.innerHTML = `
+       <div class="max-w-[80%] ${isMe ? 'items-end' : 'items-start'} flex flex-col">
+-        ${!isMe ? `<span class="text-[11px] text-slate-500 mb-0.5 ml-2">${escapeHtml(msg.userName)}${msg.role !== 'member' ? ' <span class="text-pink-400 font-semibold">('+msg.role.toUpperCase()+')</span>' : ''} · ${formatTime(msg.ts)}</span>` : ''}
++        ${!isMe ? `<span class="text-[11px] text-slate-500 mb-0.5 ml-2">${escapeHtml(msg.userName)}${msg.role === 'owner' ? ' <span class="text-pink-400 font-semibold">(OWNER)</span>' : ''} · ${formatTime(msg.ts)}</span>` : ''}
+         <div class="relative flex items-center gap-1 ${isMe ? 'flex-row-reverse' : ''}">
+-          <div class="${isMe ? 'bubble-me' : 'bubble-other'} px-3 py-2 text-sm shadow break-words">${escapeHtml(msg.text)}</div>
+-          ${canDelete ? `<button data-msg-id="${msg.id}" class="msg-del opacity-0 group-hover/message:opacity-100 transition p-1.5 rounded-full hover:bg-red-600/20 text-red-400 shrink-0" title="Delete message">
+-            <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6M1 7h22M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3"/></svg>
+-          </button>` : ''}
++          <div class="${isMe ? 'bubble-me' : 'bubble-other'} px-3 py-2 text-sm shadow break-words">
++            ${reply ? `<div class="reply-quote" data-jump="${escapeHtml(reply.id)}">
++              <div class="reply-quote-name">${escapeHtml(reply.userName || 'Message')}</div>
++              <div class="reply-quote-text">${escapeHtml(reply.text || '')}</div>
++            </div>` : ''}
++            ${escapeHtml(msg.text)}
++          </div>
++          <div class="opacity-0 group-hover/message:opacity-100 transition flex items-center gap-0.5 shrink-0">
++            <button data-reply-id="${msg.id}" class="msg-reply p-1.5 rounded-full hover:bg-slate-700 text-slate-300" title="Reply">
++              <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6"/></svg>
++            </button>
++            ${canDelete ? `<button data-msg-id="${msg.id}" class="msg-del p-1.5 rounded-full hover:bg-red-600/20 text-red-400" title="Delete message">
++              <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6M1 7h22M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3"/></svg>
++            </button>` : ''}
++          </div>
+         </div>
+-        ${isMe ? `<span class="text-[11px] text-slate-500 mt-0.5 mr-2">${formatTime(msg.ts)}</span>` : ''}
++        ${isMe ? `<span class="text-[11px] text-slate-500 mt-0.5 mr-1 flex items-center gap-1">
++          ${formatTime(msg.ts)}
++          <button class="ticks ${seenClass} seen-btn" title="${seen.length ? 'Seen · tap for details' : 'Sent · tap for details'}" aria-label="Message info">${ticksSVG()}</button>
++        </span>` : ''}
+       </div>
+     `;
++
++    const quote = wrapper.querySelector('.reply-quote');
++    if (quote) quote.addEventListener('click', () => scrollToMessage(reply.id));
++
++    const replyBtn = wrapper.querySelector('.msg-reply');
++    if (replyBtn) replyBtn.addEventListener('click', (e) => {
++      e.stopPropagation();
++      setReplyTo(msg);
++    });
++
+     const delBtn = wrapper.querySelector('.msg-del');
+     if (delBtn) {
+       delBtn.addEventListener('click', async (e) => {
+@@ -576,18 +712,94 @@ function renderMessages() {
+         if (ok) deleteMessage(msg.id);
+       });
+     }
++
++    const seenBtn = wrapper.querySelector('.seen-btn');
++    if (seenBtn) seenBtn.addEventListener('click', (e) => {
++      e.stopPropagation();
++      openSeenModal(msg);
++    });
++
+     els.messages.appendChild(wrapper);
+   }
+   if (wasAtBottom) els.messages.scrollTop = els.messages.scrollHeight;
+ }
+ 
++function setReplyTo(msg) {
++  state.replyTo = { id: msg.id, userName: msg.userName, text: msg.text };
++  els.replyToName.textContent = msg.userName || 'Message';
++  els.replyToText.textContent = msg.text || '';
++  els.replyBar.classList.remove('hidden');
++  els.chatInput.focus();
++}
++
++function clearReply() {
++  state.replyTo = null;
++  els.replyBar.classList.add('hidden');
++}
++
++function scrollToMessage(id) {
++  const el = els.messages.querySelector(`[data-msg-id="${id}"]`);
++  if (!el) {
++    showToast('Original message is no longer available');
++    return;
++  }
++  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
++  el.classList.add('msg-highlight');
++  setTimeout(() => el.classList.remove('msg-highlight'), 1600);
++}
++
++function openSeenModal(msg) {
++  state.seenTarget = msg;
++  const seen = seenEntries(msg).sort((a, b) => (a.ts || 0) - (b.ts || 0));
++  const seenIds = new Set(seen.map(s => s.id));
++  const others = (state.room.users || []).filter(u => u.id !== msg.userId && !seenIds.has(u.id));
++
++  let html = '';
++  html += `<div>
++    <p class="text-xs uppercase tracking-wide text-slate-400 font-semibold mb-2">Seen by</p>`;
++  if (!seen.length) {
++    html += `<p class="text-slate-500 text-sm">No one has seen this yet.</p>`;
++  } else {
++    html += `<div class="space-y-2">`;
++    for (const s of seen) {
++      const name = s.name || (state.room.users.find(u => u.id === s.id) || {}).name || 'Someone';
++      html += `<div class="flex items-center justify-between gap-3">
++        <span class="font-medium truncate">${escapeHtml(name)}</span>
++        <span class="text-slate-400 text-xs shrink-0">${s.ts ? formatSeenAt(s.ts) : ''}</span>
++      </div>`;
++    }
++    html += `</div>`;
++  }
++  html += `</div>`;
++
++  html += `<div>
++    <p class="text-xs uppercase tracking-wide text-slate-400 font-semibold mb-2">Not seen yet</p>`;
++  if (!others.length) {
++    html += `<p class="text-slate-500 text-sm">${seen.length ? 'Everyone currently in the room has seen it.' : 'Waiting for others to open the chat.'}</p>`;
++  } else {
++    html += `<div class="space-y-1.5">`;
++    for (const u of others) {
++      html += `<div class="text-slate-300">${escapeHtml(u.name)}</div>`;
++    }
++    html += `</div>`;
++  }
++  html += `</div>`;
++
++  els.seenBody.innerHTML = html;
++  els.seenModal.style.display = 'flex';
++}
++
++function closeSeenModal() {
++  els.seenModal.style.display = 'none';
++  state.seenTarget = null;
++}
++
+ async function deleteMessage(msgId) {
+   try {
+     await api(`/api/rooms/${roomId}/messages/${msgId}?userId=${state.userId}`, { method: 'DELETE' });
+-    // Optimistically remove locally; realtime event will sync for others
+     state.room.messages = state.room.messages.filter(m => m.id !== msgId);
+     renderMessages();
+-  } catch(e) { showToast(e.message, true); }
++  } catch (e) { showToast(e.message, true); }
+ }
+ 
+ function updateChatPermission() {
+@@ -608,7 +820,17 @@ function updateFilePermissions() {
+ }
+ 
+ function updateRoomNameEditable() {
+-  els.roomName.readOnly = !(me() && (me().role === 'owner' || me().role === 'admin'));
++  els.roomName.readOnly = !(me() && me().role === 'owner');
++}
++
++function markVisibleSeen() {
++  if (!state.room || !state.userId) return;
++  if (document.visibilityState !== 'visible') return;
++  const unseen = state.room.messages
++    .filter(m => m.userId !== state.userId && !(m.seenBy && m.seenBy[state.userId]))
++    .map(m => m.id);
++  if (!unseen.length) return;
++  socket.emit('mark_seen', { roomId, userId: state.userId, messageIds: unseen });
+ }
+ 
+ // ---------- API actions ----------
+@@ -618,24 +840,28 @@ async function api(url, opts = {}) {
+     ...opts
+   });
+   let data = {};
+-  try { data = await res.json(); } catch(e) {}
++  try { data = await res.json(); } catch (e) {}
+   if (!res.ok) throw new Error(data.error || 'Request failed');
+   return data;
+ }
+ 
+-async function joinRoom(name) {
++async function requestJoin(name) {
+   try {
+     const data = await api(`/api/rooms/${roomId}/join`, {
+       method: 'POST',
+-      body: JSON.stringify({ name, userId: state.userId })
++      body: JSON.stringify({ name, userId: state.userId || state.pendingId || undefined })
+     });
+-    state.room = data;
+-    state.userId = data.myUserId;
+-    localStorage.setItem('ts_user_' + roomId, state.userId);
++    if (data.status === 'pending') {
++      state.pendingId = data.pendingId;
++      localStorage.setItem('ts_pending_' + roomId, data.pendingId);
++      localStorage.setItem('ts_lastname', name);
++      showWaiting(data.name, data.roomName);
++      socket.emit('wait_approval', { roomId, pendingId: data.pendingId });
++      return;
++    }
+     localStorage.setItem('ts_lastname', name);
+-    els.nameModal.style.display = 'none';
+-    initRoom();
+-  } catch(e) {
++    enterAsMember(data);
++  } catch (e) {
+     showToast(e.message, true);
+   }
+ }
+@@ -665,14 +891,14 @@ async function uploadFiles(fileList, paths = null, folderPaths = null) {
+         if (xhr.status >= 200 && xhr.status < 300) resolve(xhr.response);
+         else {
+           try { reject(new Error(JSON.parse(xhr.response).error || 'Upload failed')); }
+-          catch(e) { reject(new Error('Upload failed')); }
++          catch (e) { reject(new Error('Upload failed')); }
+         }
+       };
+       xhr.onerror = () => reject(new Error('Network error'));
+       xhr.send(fd);
+     });
+     showToast(`Uploaded ${files.length} file(s)${folderMsg} successfully`);
+-  } catch(e) {
++  } catch (e) {
+     showToast('Upload failed: ' + e.message, true);
+   }
+ }
+@@ -686,13 +912,13 @@ async function createFolder() {
+       method: 'POST',
+       body: JSON.stringify({ userId: state.userId, name: name.trim(), parentId: state.currentFolder })
+     });
+-  } catch(e) { showToast(e.message, true); }
++  } catch (e) { showToast(e.message, true); }
+ }
+ 
+ async function deleteFile(fileId) {
+   try {
+     await api(`/api/rooms/${roomId}/files/${fileId}?userId=${state.userId}`, { method: 'DELETE' });
+-  } catch(e) { showToast(e.message, true); }
++  } catch (e) { showToast(e.message, true); }
+ }
+ 
+ async function renameFile(fileId, newName) {
+@@ -701,7 +927,7 @@ async function renameFile(fileId, newName) {
+       method: 'PATCH',
+       body: JSON.stringify({ userId: state.userId, name: newName })
+     });
+-  } catch(e) { showToast(e.message, true); }
++  } catch (e) { showToast(e.message, true); }
+ }
+ 
+ async function renameRoom(newName) {
+@@ -710,111 +936,21 @@ async function renameRoom(newName) {
+       method: 'PATCH',
+       body: JSON.stringify({ userId: state.userId, name: newName })
+     });
+-  } catch(e) { showToast(e.message, true); }
+-}
+-
+-async function updatePermissions(targetUserId, perms) {
+-  try {
+-    await api(`/api/rooms/${roomId}/users/${targetUserId}/permissions`, {
+-      method: 'PATCH',
+-      body: JSON.stringify({ actorUserId: state.userId, permissions: perms })
+-    });
+-  } catch(e) { showToast(e.message, true); }
+-}
+-
+-async function updateRole(targetUserId, role) {
+-  try {
+-    await api(`/api/rooms/${roomId}/users/${targetUserId}/role`, {
+-      method: 'PATCH',
+-      body: JSON.stringify({ actorUserId: state.userId, role })
+-    });
+-    closePermModalFn();
+-  } catch(e) { showToast(e.message, true); }
+-}
+-
+-// ---------- Permissions modal ----------
+-let permTarget = null;
+-function openPermModal(user) {
+-  permTarget = user;
+-  els.permTitle.textContent = user.name;
+-  els.permSubtitle.textContent = `Role: ${user.role}`;
+-  const myRole = me().role;
+-  const iAmOwner = myRole === 'owner';
+-
+-  const fields = [
+-    { key: 'can_chat', label: 'Can send chat messages', icon: '💬' },
+-    { key: 'can_upload', label: 'Can upload files', icon: '⬆️' },
+-    { key: 'can_create_folder', label: 'Can create folders', icon: '📁' },
+-    { key: 'can_delete', label: 'Can delete files/folders', icon: '🗑️' },
+-    { key: 'can_rename', label: 'Can rename items', icon: '✏️' },
+-  ];
+-
+-  // Can't edit other admins if you're not owner, or owner
+-  if (user.role === 'owner') {
+-    els.permBody.innerHTML = '<p class="text-sm text-slate-400">The room owner has full permissions and cannot be restricted.</p>';
+-    els.permRoleSection.classList.add('hidden');
+-    els.permModal.style.display = 'flex';
+-    return;
+-  }
+-
+-  const canEdit = iAmOwner || (myRole === 'admin' && user.role === 'member');
+-  if (!canEdit) {
+-    els.permBody.innerHTML = '<p class="text-sm text-slate-400">You cannot modify this user.</p>';
+-    els.permRoleSection.classList.add('hidden');
+-    els.permModal.style.display = 'flex';
+-    return;
+-  }
+-
+-  els.permBody.innerHTML = '';
+-  for (const f of fields) {
+-    const enabled = user.permissions[f.key] === true;
+-    const row = document.createElement('label');
+-    row.className = 'flex items-center justify-between p-3 bg-slate-900/50 rounded-lg cursor-pointer hover:bg-slate-900';
+-    row.innerHTML = `
+-      <span class="flex items-center gap-2 text-sm"><span>${f.icon}</span>${f.label}</span>
+-      <div class="relative">
+-        <input type="checkbox" data-key="${f.key}" ${enabled ? 'checked' : ''} class="peer sr-only perm-toggle" />
+-        <div class="w-11 h-6 bg-slate-600 rounded-full peer-checked:bg-pink-500 transition"></div>
+-        <div class="absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition peer-checked:translate-x-5"></div>
+-      </div>
+-    `;
+-    els.permBody.appendChild(row);
+-  }
+-  els.permBody.querySelectorAll('.perm-toggle').forEach(cb => {
+-    cb.addEventListener('change', () => {
+-      updatePermissions(user.id, { [cb.dataset.key]: cb.checked });
+-    });
+-  });
+-
+-  // Role buttons (owner only)
+-  if (iAmOwner && user.id !== state.userId) {
+-    els.permRoleSection.classList.remove('hidden');
+-    els.permRoleSection.querySelectorAll('.role-btn').forEach(b => {
+-      b.classList.remove('bg-pink-600', 'bg-indigo-600');
+-      b.classList.add('bg-slate-700');
+-      if (b.dataset.role === user.role) {
+-        b.classList.remove('bg-slate-700');
+-        b.classList.add('bg-indigo-600');
+-      }
+-    });
+-  } else {
+-    els.permRoleSection.classList.add('hidden');
+-  }
+-
+-  els.permModal.style.display = 'flex';
+-}
+-
+-function closePermModalFn() {
+-  els.permModal.style.display = 'none';
+-  permTarget = null;
++  } catch (e) { showToast(e.message, true); }
+ }
+ 
+ // ---------- Chat ----------
+ function sendMessage() {
+   const text = els.chatInput.value.trim();
+   if (!text) return;
+-  socket.emit('send_message', { roomId, userId: state.userId, text });
++  socket.emit('send_message', {
++    roomId,
++    userId: state.userId,
++    text,
++    replyToId: state.replyTo ? state.replyTo.id : undefined
++  });
+   els.chatInput.value = '';
++  clearReply();
+   state.isTyping = false;
+   socket.emit('typing', { roomId, userId: state.userId, isTyping: false });
+ }
+@@ -837,20 +973,28 @@ els.chatInput.addEventListener('input', () => {
+   }, 1500);
+ });
+ 
++els.cancelReplyBtn.addEventListener('click', clearReply);
++
+ // ---------- Socket events ----------
+ socket.on('connect', () => {
+   if (state.room && state.userId) {
+     socket.emit('join_room', { roomId, userId: state.userId });
++  } else if (state.pendingId) {
++    socket.emit('wait_approval', { roomId, pendingId: state.pendingId });
+   }
+ });
+ 
+ socket.on('new_message', (msg) => {
++  if (!state.room) return;
++  if (!msg.seenBy) msg.seenBy = {};
+   state.room.messages.push(msg);
+   if (state.room.messages.length > 500) state.room.messages = state.room.messages.slice(-500);
+   renderMessages();
++  if (msg.userId !== state.userId) markVisibleSeen();
+ });
+ 
+ socket.on('users_updated', ({ users }) => {
++  if (!state.room) return;
+   state.room.users = users;
+   renderUsers();
+   updateChatPermission();
+@@ -858,7 +1002,7 @@ socket.on('users_updated', ({ users }) => {
+ });
+ 
+ socket.on('presence', ({ users }) => {
+-  // Merge online status
++  if (!state.room) return;
+   const onlineMap = {};
+   users.forEach(u => onlineMap[u.id] = u.online);
+   state.room.users.forEach(u => { u.online = onlineMap[u.id] || false; });
+@@ -866,28 +1010,85 @@ socket.on('presence', ({ users }) => {
+ });
+ 
+ socket.on('files_updated', ({ files }) => {
++  if (!state.room) return;
+   state.room.files = files;
+-  // Make sure we still have a valid current folder
+-  if (!files.find(f => f.id === state.currentFolder)) {
+-    state.currentFolder = 'root';
+-  }
++  if (!files.find(f => f.id === state.currentFolder)) state.currentFolder = 'root';
+   renderFiles();
+ });
+ 
+ socket.on('room_updated', ({ name, expiresAt }) => {
++  if (!state.room) return;
+   if (name) state.room.name = name;
+   if (expiresAt) state.room.expiresAt = expiresAt;
+   renderHeader();
+ });
+ 
+ socket.on('message_deleted', ({ messageId }) => {
++  if (!state.room) return;
+   const before = state.room.messages.length;
+   state.room.messages = state.room.messages.filter(m => m.id !== messageId);
+   if (state.room.messages.length !== before) renderMessages();
+ });
+ 
++socket.on('seen_update', ({ updates }) => {
++  if (!state.room || !updates) return;
++  let changed = false;
++  for (const u of updates) {
++    const msg = state.room.messages.find(m => m.id === u.messageId);
++    if (!msg) continue;
++    if (!msg.seenBy) msg.seenBy = {};
++    msg.seenBy[u.userId] = { ts: u.ts, name: u.name };
++    changed = true;
++  }
++  if (changed) {
++    renderMessages();
++    if (state.seenTarget) {
++      const fresh = state.room.messages.find(m => m.id === state.seenTarget.id);
++      if (fresh) openSeenModal(fresh);
++    }
++  }
++});
++
++socket.on('pending_updated', ({ pendingUsers }) => {
++  if (!state.room) return;
++  state.room.pendingUsers = pendingUsers || [];
++  renderPending();
++});
++
++socket.on('join_request', ({ name }) => {
++  if (me() && me().role === 'owner') {
++    showToast(`${name} wants to join`);
++  }
++});
++
++socket.on('join_approved', (data) => {
++  showToast('You were admitted to the room');
++  enterAsMember(data);
++});
++
++socket.on('join_rejected', ({ reason }) => {
++  localStorage.removeItem('ts_pending_' + roomId);
++  state.pendingId = null;
++  const msg = {
++    denied: 'The owner declined your request',
++    expired: 'This room has expired',
++    deleted: 'This room was deleted',
++    left: 'Join request cancelled',
++    not_found: 'This room is no longer available'
++  }[reason] || 'You cannot join this room';
++  showToast(msg, reason !== 'left');
++  setTimeout(() => window.location.href = '/', 1800);
++});
++
++socket.on('forced_leave', () => {
++  clearIdentity();
++  showToast('You left the room');
++  setTimeout(() => window.location.href = '/', 800);
++});
++
+ socket.on('room_deleted', ({ reason }) => {
+   clearInterval(state.expiryInterval);
++  clearIdentity();
+   showToast(reason === 'expired' ? 'This room has expired and was deleted' : 'This room was deleted by the owner', true);
+   setTimeout(() => window.location.href = '/', 2000);
+ });
+@@ -899,8 +1100,7 @@ socket.on('activity', ({ text }) => {
+   els.activityBar._t = setTimeout(() => els.activityBar.classList.add('hidden'), 4000);
+ });
+ 
+-socket.on('typing_update', ({ userId, userName, isTyping }) => {
+-  // show one name at a time for simplicity
++socket.on('typing_update', ({ userName, isTyping }) => {
+   if (isTyping) {
+     els.typingIndicator.textContent = `${userName} is typing...`;
+     els.typingIndicator.classList.remove('hidden');
+@@ -917,8 +1117,7 @@ els.copyLinkBtn.addEventListener('click', async () => {
+   try {
+     await navigator.clipboard.writeText(link);
+     showToast('Invite link copied!');
+-  } catch(e) {
+-    // Fallback: select text in a temporary textarea so user can copy
++  } catch (e) {
+     const ta = document.createElement('textarea');
+     ta.value = link;
+     ta.style.position = 'fixed';
+@@ -926,10 +1125,7 @@ els.copyLinkBtn.addEventListener('click', async () => {
+     document.body.appendChild(ta);
+     ta.select();
+     try { document.execCommand('copy'); showToast('Invite link copied!'); }
+-    catch(_) {
+-      // Last resort: custom prompt showing the link
+-      await Dialog.alert(link, 'Copy this invite link');
+-    }
++    catch (_) { await Dialog.alert(link, 'Copy this invite link'); }
+     document.body.removeChild(ta);
+   }
+ });
+@@ -942,7 +1138,6 @@ els.fileInput.addEventListener('change', (e) => {
+ });
+ 
+ els.folderInput.addEventListener('click', async (e) => {
+-  // Prefer File System Access API (supports empty folders) where available
+   if (window.showDirectoryPicker) {
+     e.preventDefault();
+     try {
+@@ -950,20 +1145,15 @@ els.folderInput.addEventListener('click', async (e) => {
+       const { files, folderPaths } = await readDirHandle(dirHandle, dirHandle.name);
+       const paths = files.map(f => f.relPath);
+       await uploadFiles(files, paths, folderPaths);
+-    } catch(err) {
+-      // User cancelled — ignore
++    } catch (err) {
++      /* cancelled */
+     }
+   }
+-  // else let the native webkitdirectory picker open (the change handler below will run)
+ });
+ 
+ els.folderInput.addEventListener('change', (e) => {
+-  // Fallback for browsers without showDirectoryPicker (webkitdirectory).
+-  // NOTE: This does NOT include empty folders (browser limitation).
+   const files = Array.from(e.target.files || []);
+   const paths = files.map(f => f.webkitRelativePath || f.name);
+-  // Heuristic: collect unique parent directories from paths so non-empty
+-  // intermediate folders are still created; truly empty folders are missed.
+   const folderPaths = new Set();
+   for (const p of paths) {
+     const parts = p.split('/');
+@@ -973,9 +1163,6 @@ els.folderInput.addEventListener('change', (e) => {
+   e.target.value = '';
+ });
+ 
+-// ---------- Drag-and-drop (files + folders, empty folders included) ----------
+-// Recursively read dropped items. Returns { files: File[], folderPaths: string[] }
+-// so empty directories are preserved.
+ function readEntry(entry, pathPrefix = '') {
+   return new Promise((resolve) => {
+     if (entry.isFile) {
+@@ -991,7 +1178,7 @@ function readEntry(entry, pathPrefix = '') {
+         reader.readEntries(async (batch) => {
+           if (batch.length === 0) {
+             const files = [];
+-            const folders = [dirPath]; // this directory itself (even if empty)
++            const folders = [dirPath];
+             for (const child of allEntries) {
+               const got = await readEntry(child, dirPath + '/');
+               files.push(...got.files);
+@@ -1028,8 +1215,6 @@ async function getDroppedFiles(dt) {
+   return { files: Array.from(dt.files || []), folderPaths: [] };
+ }
+ 
+-// Recursively read a FileSystemDirectoryHandle (modern File System Access API),
+-// which DOES include empty directories.
+ async function readDirHandle(dirHandle, baseName) {
+   const files = [];
+   const folderPaths = [];
+@@ -1049,14 +1234,13 @@ async function readDirHandle(dirHandle, baseName) {
+   return { files, folderPaths };
+ }
+ 
+-// Drag & drop
+-;['dragenter','dragover'].forEach(ev => {
++;['dragenter', 'dragover'].forEach(ev => {
+   els.dropZone.addEventListener(ev, (e) => {
+     e.preventDefault(); e.stopPropagation();
+     if (can('can_upload')) els.dropOverlay.classList.remove('hidden');
+   });
+ });
+-;['dragleave','drop'].forEach(ev => {
++;['dragleave', 'drop'].forEach(ev => {
+   els.dropZone.addEventListener(ev, (e) => {
+     e.preventDefault(); e.stopPropagation();
+     els.dropOverlay.classList.add('hidden');
+@@ -1075,7 +1259,6 @@ els.dropZone.addEventListener('drop', async (e) => {
+   }
+ });
+ 
+-// Rename room on enter
+ els.roomName.addEventListener('keydown', (e) => {
+   if (e.key === 'Enter') {
+     e.target.blur();
+@@ -1093,21 +1276,12 @@ els.roomName.addEventListener('blur', () => {
+   else els.roomName.value = state.room.name;
+ });
+ 
+-els.closePermModal.addEventListener('click', closePermModalFn);
+-els.permModal.addEventListener('click', (e) => { if (e.target === els.permModal) closePermModalFn(); });
+-els.permRoleSection.querySelectorAll('.role-btn').forEach(b => {
+-  b.addEventListener('click', () => {
+-    if (permTarget) updateRole(permTarget.id, b.dataset.role);
+-  });
+-});
+-
+ els.joinNameBtn.addEventListener('click', () => {
+   const name = els.joinNameInput.value.trim() || localStorage.getItem('ts_lastname') || ('Guest_' + Math.floor(Math.random() * 1000));
+-  joinRoom(name);
++  requestJoin(name);
+ });
+ els.joinNameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') els.joinNameBtn.click(); });
+ 
+-// Expiry modal handlers
+ els.changeExpiryBtn.addEventListener('click', () => {
+   const hoursLeft = Math.max(1, (state.room.expiresAt - Date.now()) / 3600000);
+   els.expirySelect.value = nearestExpiryOption(hoursLeft);
+@@ -1119,21 +1293,34 @@ els.saveExpiryBtn.addEventListener('click', () => {
+   changeExpiry(Number(els.expirySelect.value));
+ });
+ 
+-// Delete room
+ els.deleteRoomBtn.addEventListener('click', deleteRoom);
++els.leaveRoomBtn.addEventListener('click', leaveRoom);
++
++els.closeSeenModal.addEventListener('click', closeSeenModal);
++els.seenModal.addEventListener('click', (e) => { if (e.target === els.seenModal) closeSeenModal(); });
++
++els.cancelWaitBtn.addEventListener('click', async () => {
++  const id = state.pendingId;
++  if (id) {
++    try {
++      await api(`/api/rooms/${roomId}/leave`, {
++        method: 'POST',
++        body: JSON.stringify({ userId: id })
++      });
++    } catch (e) { /* ignore */ }
++  }
++  clearIdentity();
++  window.location.href = '/';
++});
+ 
+-// Navigation: back to parent, go to root
+ els.backBtn.addEventListener('click', navigateUp);
+ els.homeBtn.addEventListener('click', navigateToRoot);
+ 
+-// Download current folder as ZIP
+ els.downloadZipBtn.addEventListener('click', (e) => {
+   e.preventDefault();
+   if (!state.room) return;
+   const folderId = state.currentFolder || 'root';
+   const url = `/api/rooms/${roomId}/folders/${folderId}/zip?userId=${state.userId}`;
+-  // Use a temp anchor so the browser treats it as a download, and a new tab
+-  // won't flash (better than window.open).
+   const a = document.createElement('a');
+   a.href = url;
+   a.download = '';
+@@ -1143,16 +1330,13 @@ els.downloadZipBtn.addEventListener('click', (e) => {
+   showToast('Preparing ZIP download…');
+ });
+ 
+-// Keyboard shortcuts for file navigation (only when NOT typing in an input)
+ document.addEventListener('keydown', (e) => {
+-  // Don't hijack keys while typing
+   const tag = (e.target && e.target.tagName) || '';
+   const isTyping = tag === 'INPUT' || tag === 'TEXTAREA' || e.target.isContentEditable;
+   if (isTyping) return;
+-  // Don't trigger while a dialog is open
+   const dialogOpen = document.getElementById('dialog')?.style?.display === 'flex'
+-                  || els.permModal?.style?.display === 'flex'
+                   || els.expiryModal?.style?.display === 'flex'
++                  || els.seenModal?.style?.display === 'flex'
+                   || els.nameModal?.style?.display === 'flex';
+   if (dialogOpen) return;
+ 
+@@ -1165,7 +1349,10 @@ document.addEventListener('keydown', (e) => {
+   }
+ });
+ 
+-// Mobile sidebar toggle
++document.addEventListener('visibilitychange', () => {
++  if (document.visibilityState === 'visible') markVisibleSeen();
++});
++
+ els.toggleSidebar.addEventListener('click', () => {
+   state.sidebarOpen = !state.sidebarOpen;
+   if (state.sidebarOpen) {
+@@ -1186,39 +1373,57 @@ els.toggleSidebar.addEventListener('click', () => {
+ 
+ // ---------- Init ----------
+ async function loadRoom() {
+-  // Check if we already have a userId for this room
+   if (state.userId) {
+     try {
+       const data = await api(`/api/rooms/${roomId}?userId=${state.userId}`);
+-      state.room = data;
+-      els.nameModal.style.display = 'none';
+-      initRoom();
++      enterAsMember(data);
+       return;
+-    } catch(e) {
+-      // Invalid user - fall through to name prompt
++    } catch (e) {
++      localStorage.removeItem('ts_user_' + roomId);
+       state.userId = null;
+     }
+   }
+-  // Show name modal
++
++  if (state.pendingId) {
++    try {
++      const data = await api(`/api/rooms/${roomId}/join`, {
++        method: 'POST',
++        body: JSON.stringify({
++          name: localStorage.getItem('ts_lastname') || 'Guest',
++          userId: state.pendingId
++        })
++      });
++      if (data.status === 'pending') {
++        showWaiting(data.name, data.roomName);
++        socket.emit('wait_approval', { roomId, pendingId: data.pendingId });
++        return;
++      }
++      enterAsMember(data);
++      return;
++    } catch (e) {
++      localStorage.removeItem('ts_pending_' + roomId);
++      state.pendingId = null;
++    }
++  }
++
+   els.joinNameInput.value = localStorage.getItem('ts_lastname') || '';
+-  els.nameModal.style.display = 'flex';
+-  setTimeout(() => els.joinNameInput.focus(), 100);
++  showNameModal();
+ }
+ 
+ function initRoom() {
+   renderHeader();
++  renderPending();
+   renderUsers();
+   renderFiles();
+   renderMessages();
+   updateChatPermission();
+   updateFilePermissions();
+   updateRoomNameEditable();
+-
+-  // Join socket room
+   socket.emit('join_room', { roomId, userId: state.userId });
+-
+-  // Scroll chat to bottom
+-  setTimeout(() => { els.messages.scrollTop = els.messages.scrollHeight; }, 100);
++  setTimeout(() => {
++    els.messages.scrollTop = els.messages.scrollHeight;
++    markVisibleSeen();
++  }, 100);
+ }
+ 
+ loadRoom();
+diff --git a/public/room.html b/public/room.html
+index 91cdef8..b81d12f 100644
+--- a/public/room.html
++++ b/public/room.html
+@@ -32,20 +32,37 @@
+       <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
+       <span class="hidden sm:inline">Copy Link</span>
+     </button>
++    <button id="leaveRoomBtn" class="hidden items-center gap-1.5 bg-slate-700 hover:bg-slate-600 px-3 py-2 rounded-lg text-sm font-semibold transition shadow-md" title="Leave this room">
++      <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
++      <span class="hidden sm:inline">Leave</span>
++    </button>
+     <button id="deleteRoomBtn" class="hidden items-center gap-1.5 bg-red-600/80 hover:bg-red-600 px-3 py-2 rounded-lg text-sm font-semibold transition shadow-md" title="Permanently delete this room and all its files">
+       <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6M1 7h22M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3"/></svg>
+       <span class="hidden sm:inline">Delete</span>
+     </button>
+-    <button id="toggleSidebar" class="md:hidden p-2 rounded-lg hover:bg-slate-700" aria-label="Users">
++    <button id="toggleSidebar" class="md:hidden p-2 rounded-lg hover:bg-slate-700 relative" aria-label="Users">
+       <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
++      <span id="pendingBadgeMobile" class="hidden absolute top-0.5 right-0.5 w-2.5 h-2.5 bg-amber-400 rounded-full"></span>
+     </button>
+   </header>
+ 
+   <!-- Main layout -->
+   <div class="flex-1 flex overflow-hidden">
+ 
+-    <!-- Sidebar: Users -->
++    <!-- Sidebar: Waiting room + Users -->
+     <aside id="sidebar" class="hidden md:flex md:w-72 bg-slate-800/80 border-r border-slate-700 flex-col">
++      <div id="pendingSection" class="hidden border-b border-slate-700">
++        <div class="p-4 pb-2 flex items-center justify-between">
++          <h2 class="font-semibold text-sm uppercase tracking-wide text-amber-300 flex items-center gap-2">
++            <span class="relative flex h-2 w-2">
++              <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
++              <span class="relative inline-flex rounded-full h-2 w-2 bg-amber-400"></span>
++            </span>
++            Waiting Room <span id="pendingCount" class="text-amber-200">(0)</span>
++          </h2>
++        </div>
++        <div id="pendingList" class="px-2 pb-3 space-y-2 max-h-56 overflow-y-auto"></div>
++      </div>
+       <div class="p-4 border-b border-slate-700">
+         <h2 class="font-semibold text-sm uppercase tracking-wide text-slate-400">People <span id="userCount" class="text-slate-300">(0)</span></h2>
+       </div>
+@@ -115,43 +132,30 @@
+           <span id="typingIndicator" class="text-xs text-pink-300 italic hidden"></span>
+         </div>
+         <div id="messages" class="flex-1 overflow-y-auto p-3 space-y-2"></div>
+-        <div class="p-3 border-t border-slate-700 bg-slate-800/70">
+-          <form id="chatForm" class="flex gap-2">
++        <div class="border-t border-slate-700 bg-slate-800/70">
++          <div id="replyBar" class="hidden px-3 pt-3">
++            <div class="flex items-start gap-2 bg-slate-900/70 border-l-4 border-pink-500 rounded-r-lg px-3 py-2">
++              <div class="flex-1 min-w-0">
++                <div class="text-[11px] font-semibold text-pink-300" id="replyToName"></div>
++                <div class="text-xs text-slate-400 truncate" id="replyToText"></div>
++              </div>
++              <button id="cancelReplyBtn" class="text-slate-400 hover:text-white p-1" title="Cancel reply">
++                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
++              </button>
++            </div>
++          </div>
++          <form id="chatForm" class="flex gap-2 p-3">
+             <input id="chatInput" type="text" placeholder="Type a message..." maxlength="2000"
+               class="flex-1 px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-pink-500"/>
+             <button type="submit" class="px-4 py-2 bg-gradient-to-r from-pink-600 to-indigo-600 hover:from-pink-500 hover:to-indigo-500 rounded-lg text-sm font-semibold transition">Send</button>
+           </form>
+-          <p id="chatMuted" class="hidden mt-2 text-xs text-red-400 text-center">You don't have permission to chat.</p>
++          <p id="chatMuted" class="hidden px-3 pb-3 text-xs text-red-400 text-center">You don't have permission to chat.</p>
+         </div>
+       </section>
+ 
+     </main>
+   </div>
+ 
+-  <!-- Permissions modal -->
+-  <div id="permModal" class="hidden fixed inset-0 bg-black/70 z-50 items-center justify-center p-4">
+-    <div class="bg-slate-800 rounded-2xl shadow-2xl w-full max-w-md border border-slate-700 overflow-hidden">
+-      <div class="p-5 border-b border-slate-700 flex items-center justify-between">
+-        <div>
+-          <h3 class="font-bold text-lg" id="permTitle">Permissions</h3>
+-          <p class="text-xs text-slate-400" id="permSubtitle"></p>
+-        </div>
+-        <button id="closePermModal" class="text-slate-400 hover:text-white p-1">
+-          <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+-        </button>
+-      </div>
+-      <div id="permBody" class="p-5 space-y-3"></div>
+-      <div id="permRoleSection" class="px-5 pb-5 space-y-2 border-t border-slate-700 pt-4 hidden">
+-        <p class="text-sm font-semibold text-slate-300">Role</p>
+-        <div class="flex gap-2">
+-          <button data-role="admin" class="role-btn flex-1 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-sm font-semibold transition">Make Admin</button>
+-          <button data-role="member" class="role-btn flex-1 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-sm font-semibold transition">Make Member</button>
+-        </div>
+-        <p class="text-xs text-slate-500">Only the room owner can change roles.</p>
+-      </div>
+-    </div>
+-  </div>
+-
+   <!-- Expiry modal -->
+   <div id="expiryModal" class="hidden fixed inset-0 bg-black/70 z-50 items-center justify-center p-4">
+     <div class="bg-slate-800 rounded-2xl shadow-2xl w-full max-w-sm border border-slate-700 overflow-hidden">
+@@ -179,13 +183,40 @@
+     </div>
+   </div>
+ 
++  <!-- Seen-by modal -->
++  <div id="seenModal" class="hidden fixed inset-0 bg-black/70 z-50 items-center justify-center p-4">
++    <div class="bg-slate-800 rounded-2xl shadow-2xl w-full max-w-sm border border-slate-700 overflow-hidden">
++      <div class="p-5 border-b border-slate-700 flex items-center justify-between">
++        <h3 class="font-bold text-lg">Message info</h3>
++        <button id="closeSeenModal" class="text-slate-400 hover:text-white p-1">
++          <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
++        </button>
++      </div>
++      <div id="seenBody" class="p-5 max-h-80 overflow-y-auto space-y-4 text-sm"></div>
++    </div>
++  </div>
++
+   <!-- Name modal (first join) -->
+   <div id="nameModal" class="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4">
+     <div class="bg-slate-800 rounded-2xl shadow-2xl w-full max-w-sm border border-slate-700 p-6">
+       <h3 class="font-bold text-xl mb-2">Join Room</h3>
+-      <p class="text-sm text-slate-400 mb-4">Enter a display name to join this room. Others will see this name.</p>
++      <p class="text-sm text-slate-400 mb-4">Enter a display name. The owner must approve you before you can enter.</p>
+       <input id="joinNameInput" type="text" placeholder="Your name" maxlength="40" class="w-full px-4 py-3 bg-slate-900 border border-slate-700 rounded-lg mb-4 focus:outline-none focus:ring-2 focus:ring-pink-500"/>
+-      <button id="joinNameBtn" class="w-full py-3 bg-gradient-to-r from-pink-600 to-indigo-600 hover:from-pink-500 hover:to-indigo-500 rounded-lg font-semibold transition">Join Room</button>
++      <button id="joinNameBtn" class="w-full py-3 bg-gradient-to-r from-pink-600 to-indigo-600 hover:from-pink-500 hover:to-indigo-500 rounded-lg font-semibold transition">Request to Join</button>
++    </div>
++  </div>
++
++  <!-- Waiting for owner approval -->
++  <div id="waitingOverlay" class="hidden fixed inset-0 bg-slate-950/95 z-40 items-center justify-center p-4">
++    <div class="bg-slate-800 rounded-2xl shadow-2xl w-full max-w-md border border-slate-700 p-8 text-center">
++      <div class="mx-auto mb-5 w-16 h-16 rounded-full bg-amber-500/15 flex items-center justify-center">
++        <svg class="w-8 h-8 text-amber-300 animate-pulse" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
++          <path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
++        </svg>
++      </div>
++      <h3 class="font-bold text-2xl mb-2">Waiting for the owner</h3>
++      <p id="waitingText" class="text-slate-400 text-sm mb-6">Your request was sent. You'll enter the room as soon as the owner lets you in.</p>
++      <button id="cancelWaitBtn" class="px-5 py-2.5 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm font-semibold transition">Cancel request</button>
+     </div>
+   </div>
+ 
+diff --git a/server.js b/server.js
+index 755b33e..3a4ae82 100644
+--- a/server.js
++++ b/server.js
+@@ -44,18 +44,39 @@ function ensureDir(dir) {
+ ensureDir(path.dirname(DATA_FILE)); // data/
+ ensureDir(UPLOADS_DIR);             // uploads/
+ 
+-// ---------- Ensure required directories exist ----------
+-function ensureDir(dir) {
+-  try { fs.mkdirSync(dir, { recursive: true }); } catch (e) { /* ignore */ }
++// ---------- Persistence ----------
++function normalizeRooms(data) {
++  if (!data || typeof data !== 'object') return {};
++  for (const room of Object.values(data)) {
++    if (!room || typeof room !== 'object') continue;
++    room.pendingUsers = Array.isArray(room.pendingUsers) ? room.pendingUsers : [];
++    room.users = Array.isArray(room.users) ? room.users : [];
++    room.files = Array.isArray(room.files) ? room.files : [];
++    room.messages = Array.isArray(room.messages) ? room.messages : [];
++    for (const u of room.users) {
++      // Legacy "admin" role is collapsed into member
++      if (u.role === 'admin') {
++        u.role = 'member';
++        u.permissions = defaultPermissions('member');
++      } else if (u.role === 'owner') {
++        u.permissions = defaultPermissions('owner');
++      } else {
++        u.role = 'member';
++        u.permissions = defaultPermissions('member');
++      }
++    }
++    for (const m of room.messages) {
++      if (!m.seenBy || typeof m.seenBy !== 'object') m.seenBy = {};
++      if (m.replyTo === undefined) m.replyTo = null;
++    }
++  }
++  return data;
+ }
+-ensureDir(path.dirname(DATA_FILE)); // data/
+-ensureDir(UPLOADS_DIR);              // uploads/
+ 
+-// ---------- Persistence ----------
+ function loadRooms() {
+   try {
+     if (fs.existsSync(DATA_FILE)) {
+-      return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
++      return normalizeRooms(JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')));
+     }
+   } catch (e) {
+     console.error('Failed to load rooms data:', e);
+@@ -71,9 +92,20 @@ function saveRooms() {
+ let rooms = loadRooms();
+ 
+ // ---------- Delete room (wipe all files + metadata) ----------
++function notifyRoomGone(roomId, reason) {
++  const room = rooms[roomId];
++  io.to('room:' + roomId).emit('room_deleted', { reason });
++  io.to('room:' + roomId).socketsLeave('room:' + roomId);
++  if (room && Array.isArray(room.pendingUsers)) {
++    for (const p of room.pendingUsers) {
++      io.to('pending:' + p.id).emit('join_rejected', { reason: reason === 'expired' ? 'expired' : 'deleted' });
++    }
++  }
++}
++
+ function deleteRoom(roomId) {
+   const roomDir = path.join(UPLOADS_DIR, roomId);
+-  try { if (fs.existsSync(roomDir)) fs.rmSync(roomDir, { recursive: true, force: true }); } catch(e) {}
++  try { if (fs.existsSync(roomDir)) fs.rmSync(roomDir, { recursive: true, force: true }); } catch (e) {}
+   delete rooms[roomId];
+ }
+ 
+@@ -87,9 +119,7 @@ function pruneExpiredRooms() {
+     }
+   }
+   for (const id of expiredIds) {
+-    // Notify connected users right before wiping
+-    io.to('room:' + id).emit('room_deleted', { reason: 'expired' });
+-    io.to('room:' + id).socketsLeave('room:' + id);
++    notifyRoomGone(id, 'expired');
+     deleteRoom(id);
+   }
+   if (expiredIds.length) saveRooms();
+@@ -103,7 +133,6 @@ function uid() {
+ }
+ 
+ function shortRoomId() {
+-  // Human-friendly short id
+   return crypto.randomBytes(4).toString('hex').toLowerCase();
+ }
+ 
+@@ -112,9 +141,10 @@ function sanitizeFilename(name) {
+ }
+ 
+ function defaultPermissions(role) {
+-  if (role === 'owner' || role === 'admin') {
++  if (role === 'owner') {
+     return { can_chat: true, can_upload: true, can_delete: true, can_create_folder: true, can_rename: true };
+   }
++  // Members: chat + upload. Downloads are available to every admitted member.
+   return { can_chat: true, can_upload: true, can_delete: false, can_create_folder: false, can_rename: false };
+ }
+ 
+@@ -123,23 +153,40 @@ function getRoom(roomId) {
+ }
+ 
+ function getUser(room, userId) {
++  if (!room || !userId) return null;
+   return room.users.find(u => u.id === userId) || null;
+ }
+ 
++function getPending(room, pendingId) {
++  if (!room || !pendingId) return null;
++  return (room.pendingUsers || []).find(p => p.id === pendingId) || null;
++}
++
+ function canDo(room, userId, action) {
+   const user = getUser(room, userId);
+   if (!user) return false;
+   if (user.role === 'owner') return true;
+-  if (user.role === 'admin') {
+-    // Admins can do everything except demote/delete owner or manage other admins' roles
+-    if (action === 'manage_permissions') return true;
+-    return user.permissions[action] !== false;
+-  }
+   return user.permissions[action] === true;
+ }
+ 
++function requireMember(req, res) {
++  const room = getRoom(req.params.roomId);
++  if (!room) {
++    res.status(404).json({ error: 'Room not found or expired' });
++    return { room: null, user: null };
++  }
++  const userId = req.body?.userId || req.query?.userId || req.body?.actorUserId;
++  const user = getUser(room, userId);
++  if (!user) {
++    res.status(401).json({ error: 'Not a member' });
++    return { room, user: null };
++  }
++  return { room, user };
++}
++
+ function roomPublicData(room, userId) {
+-  return {
++  const me = getUser(room, userId);
++  const data = {
+     id: room.id,
+     createdAt: room.createdAt,
+     expiresAt: room.expiresAt,
+@@ -152,11 +199,15 @@ function roomPublicData(room, userId) {
+       online: !!onlineUsers[room.id]?.[u.id]
+     })),
+     files: room.files,
+-    messages: room.messages.slice(-100), // last 100 messages
++    messages: room.messages.slice(-100),
+     myUserId: userId,
+-    myPermissions: (getUser(room, userId) || {}).permissions || null,
+-    myRole: (getUser(room, userId) || {}).role || null
++    myPermissions: (me || {}).permissions || null,
++    myRole: (me || {}).role || null
+   };
++  if (me && me.role === 'owner') {
++    data.pendingUsers = room.pendingUsers || [];
++  }
++  return data;
+ }
+ 
+ // Track online users per room: { roomId: { userId: socketId } }
+@@ -172,6 +223,32 @@ function broadcastRoom(roomId, event, payload) {
+   io.to('room:' + roomId).emit(event, payload);
+ }
+ 
++function kickUserSocket(roomId, userId, event, payload) {
++  const sid = onlineUsers[roomId]?.[userId];
++  if (sid) {
++    const sock = io.sockets.sockets.get(sid);
++    if (sock) {
++      sock.emit(event, payload);
++      sock.leave('room:' + roomId);
++    }
++  }
++  setOffline(roomId, userId);
++}
++
++function markMessagesSeen(room, user) {
++  if (!room || !user) return [];
++  const now = Date.now();
++  const updates = [];
++  for (const msg of room.messages) {
++    if (msg.userId === user.id) continue;
++    if (!msg.seenBy || typeof msg.seenBy !== 'object') msg.seenBy = {};
++    if (msg.seenBy[user.id]) continue;
++    msg.seenBy[user.id] = { ts: now, name: user.name };
++    updates.push({ messageId: msg.id, userId: user.id, ts: now, name: user.name });
++  }
++  return updates;
++}
++
+ // ---------- File Upload ----------
+ // Store flat (no subfolders on disk) with unique names; virtual folder structure
+ // is reconstructed from metadata (so nested uploads never collide).
+@@ -183,7 +260,6 @@ const storage = multer.diskStorage({
+     cb(null, roomDir);
+   },
+   filename: function (req, file, cb) {
+-    // Use a unique storage name to avoid collisions, keep original name in metadata
+     const baseName = path.basename(file.originalname || 'file');
+     const unique = uid() + '_' + sanitizeFilename(baseName);
+     cb(null, unique);
+@@ -195,13 +271,8 @@ const upload = multer({
+ });
+ 
+ // ---------- Virtual path helpers ----------
+-// Given a POSIX-style relative path like "photos/vacation/img.jpg" and a starting folder id,
+-// ensure all intermediate folders exist in room.files and return the parent folder id
+-// where the file should live. Folder nodes are created as needed (idempotent — if a folder
+-// with the same name already exists at that level, we reuse it).
+ function ensureFolderPath(room, userId, relativePath, baseParentId) {
+   if (!relativePath) return baseParentId;
+-  // Normalize separators and split
+   const normalized = String(relativePath).replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
+   if (!normalized) return baseParentId;
+   const parts = normalized.split('/').map(p => sanitizeFilename(p)).filter(Boolean);
+@@ -211,16 +282,8 @@ function ensureFolderPath(room, userId, relativePath, baseParentId) {
+   const now = Date.now();
+   const uploaderName = (getUser(room, userId) || {}).name || 'Unknown';
+ 
+-  // The last part is the filename, everything else is folders.
+-  // We are ONLY creating folders, so drop the filename (caller passes dir-only for files,
+-  // full path for files — we handle this by letting caller pass a file-aware path and we
+-  // pop the last component below).
+-  // Actually: we'll have caller pass the path and a flag, but for reuse we always interpret
+-  // the LAST segment as a folder too if `asFolder` is true; here we always treat all parts
+-  // as folders because the caller passes only the directory portion for files.
+   for (const part of parts) {
+     if (!part) continue;
+-    // Look for existing folder with same name & parent
+     let folder = room.files.find(f => f.type === 'folder' && f.parentId === currentParentId && f.name === part);
+     if (!folder) {
+       const newFolder = {
+@@ -240,6 +303,11 @@ function ensureFolderPath(room, userId, relativePath, baseParentId) {
+   return currentParentId;
+ }
+ 
++function sanitizeZipName(name) {
++  let n = String(name).replace(/[\/\\\?\%\*\:\|"<>\x00-\x1f]/g, '_').replace(/^\.+/, '_');
++  return n.slice(0, 200) || 'file';
++}
++
+ // ---------- REST Routes ----------
+ 
+ // Create room
+@@ -286,6 +354,7 @@ app.post('/api/rooms', (req, res) => {
+       permissions: defaultPermissions('owner'),
+       joinedAt: now
+     }],
++    pendingUsers: [],
+     files: [{ id: 'root', name: 'root', type: 'folder', parentId: null, createdAt: now }],
+     messages: []
+   };
+@@ -293,54 +362,151 @@ app.post('/api/rooms', (req, res) => {
+   res.json({ roomId, userId: ownerId, inviteLink: `/room/${roomId}` });
+ });
+ 
+-// Join room (sets/updates name, returns room data)
++// Join room — existing members re-enter; everyone else waits for owner approval
+ app.post('/api/rooms/:roomId/join', (req, res) => {
+   const room = getRoom(req.params.roomId);
+   if (!room) return res.status(404).json({ error: 'Room not found or expired' });
+ 
+   let userId = req.body.userId;
+   let user = userId ? getUser(room, userId) : null;
+-
+   const name = (req.body.name && String(req.body.name).trim().slice(0, 40)) || ('Guest_' + Math.floor(Math.random() * 1000));
+ 
+-  if (!user) {
+-    userId = uid();
+-    room.users.push({
+-      id: userId,
+-      name,
+-      role: 'member',
+-      permissions: defaultPermissions('member'),
+-      joinedAt: Date.now()
+-    });
+-    saveRooms();
+-  } else if (req.body.name && user.name !== name) {
+-    user.name = name;
+-    saveRooms();
++  if (user) {
++    if (req.body.name && user.name !== name) {
++      user.name = name;
++      saveRooms();
++    }
++    return res.json(roomPublicData(room, user.id));
+   }
+ 
+-  res.json(roomPublicData(room, userId));
++  let pending = userId ? getPending(room, userId) : null;
++  if (pending) {
++    if (req.body.name && pending.name !== name) {
++      pending.name = name;
++      saveRooms();
++      broadcastRoom(room.id, 'pending_updated', { pendingUsers: room.pendingUsers });
++    }
++    return res.json({ status: 'pending', pendingId: pending.id, name: pending.name, roomName: room.name });
++  }
++
++  const pendingId = uid();
++  room.pendingUsers = room.pendingUsers || [];
++  room.pendingUsers.push({
++    id: pendingId,
++    name,
++    requestedAt: Date.now()
++  });
++  saveRooms();
++  broadcastRoom(room.id, 'pending_updated', { pendingUsers: room.pendingUsers });
++  broadcastRoom(room.id, 'join_request', { id: pendingId, name });
++  res.json({ status: 'pending', pendingId, name, roomName: room.name });
+ });
+ 
+-// Get room
++// Get room (admitted members only)
+ app.get('/api/rooms/:roomId', (req, res) => {
++  const { room, user } = requireMember(req, res);
++  if (!room || !user) return;
++  res.json(roomPublicData(room, user.id));
++});
++
++// Owner admits a waiting user
++app.post('/api/rooms/:roomId/approve', (req, res) => {
++  const room = getRoom(req.params.roomId);
++  if (!room) return res.status(404).json({ error: 'Room not found' });
++  const actor = getUser(room, req.body.actorUserId);
++  if (!actor || actor.role !== 'owner') return res.status(403).json({ error: 'Only the owner can admit people' });
++
++  const pendingId = req.body.pendingId;
++  const pending = getPending(room, pendingId);
++  if (!pending) return res.status(404).json({ error: 'No such join request' });
++
++  room.pendingUsers = room.pendingUsers.filter(p => p.id !== pendingId);
++  const now = Date.now();
++  room.users.push({
++    id: pending.id,
++    name: pending.name,
++    role: 'member',
++    permissions: defaultPermissions('member'),
++    joinedAt: now
++  });
++  saveRooms();
++
++  const admitted = roomPublicData(room, pending.id);
++  io.to('pending:' + pending.id).emit('join_approved', admitted);
++  broadcastRoom(room.id, 'users_updated', { users: admitted.users });
++  broadcastRoom(room.id, 'pending_updated', { pendingUsers: room.pendingUsers });
++  broadcastRoom(room.id, 'activity', { text: `${actor.name} admitted ${pending.name}` });
++  res.json({ ok: true, user: { id: pending.id, name: pending.name, role: 'member' } });
++});
++
++// Owner declines a waiting user
++app.post('/api/rooms/:roomId/reject', (req, res) => {
++  const room = getRoom(req.params.roomId);
++  if (!room) return res.status(404).json({ error: 'Room not found' });
++  const actor = getUser(room, req.body.actorUserId);
++  if (!actor || actor.role !== 'owner') return res.status(403).json({ error: 'Only the owner can decline people' });
++
++  const pendingId = req.body.pendingId;
++  const pending = getPending(room, pendingId);
++  if (!pending) return res.status(404).json({ error: 'No such join request' });
++
++  room.pendingUsers = room.pendingUsers.filter(p => p.id !== pendingId);
++  saveRooms();
++  io.to('pending:' + pending.id).emit('join_rejected', { reason: 'denied' });
++  broadcastRoom(room.id, 'pending_updated', { pendingUsers: room.pendingUsers });
++  broadcastRoom(room.id, 'activity', { text: `${actor.name} declined ${pending.name}` });
++  res.json({ ok: true });
++});
++
++// Leave room. Owner leaving destroys the room and all files.
++app.post('/api/rooms/:roomId/leave', (req, res) => {
+   const room = getRoom(req.params.roomId);
+   if (!room) return res.status(404).json({ error: 'Room not found' });
+-  const userId = req.query.userId;
++  const userId = req.body.userId;
++
++  const pending = getPending(room, userId);
++  if (pending) {
++    room.pendingUsers = room.pendingUsers.filter(p => p.id !== userId);
++    saveRooms();
++    io.to('pending:' + userId).emit('join_rejected', { reason: 'left' });
++    broadcastRoom(room.id, 'pending_updated', { pendingUsers: room.pendingUsers });
++    return res.json({ ok: true });
++  }
++
+   const user = getUser(room, userId);
+   if (!user) return res.status(401).json({ error: 'Not a member' });
+-  res.json(roomPublicData(room, userId));
++
++  if (user.role === 'owner') {
++    notifyRoomGone(room.id, 'deleted');
++    deleteRoom(room.id);
++    saveRooms();
++    return res.json({ ok: true, destroyed: true });
++  }
++
++  const name = user.name;
++  room.users = room.users.filter(u => u.id !== userId);
++  saveRooms();
++  kickUserSocket(room.id, userId, 'forced_leave', { reason: 'left' });
++  broadcastRoom(room.id, 'users_updated', {
++    users: room.users.map(u => ({
++      id: u.id,
++      name: u.name,
++      role: u.role,
++      permissions: u.permissions,
++      online: !!onlineUsers[room.id]?.[u.id]
++    }))
++  });
++  broadcastRoom(room.id, 'activity', { text: `${name} left the room` });
++  res.json({ ok: true });
+ });
+ 
+ // Upload files (supports nested folder uploads via `paths` JSON array)
+-// Optional body field: `paths` — JSON array of relative paths (POSIX, using /), one per file,
+-// e.g. ["photos/1.jpg", "photos/thumbs/1.jpg", "readme.txt"]. Folders are created automatically.
+-// Without `paths`, files are placed directly in parentId (backward-compatible).
+ app.post('/api/rooms/:roomId/upload', upload.array('files', 500), (req, res) => {
+   const room = getRoom(req.params.roomId);
+   if (!room) return res.status(404).json({ error: 'Room not found' });
+   const userId = req.body.userId;
+   if (!canDo(room, userId, 'can_upload')) {
+-    (req.files || []).forEach(f => { try { fs.unlinkSync(f.path); } catch(e){} });
++    (req.files || []).forEach(f => { try { fs.unlinkSync(f.path); } catch (e) {} });
+     return res.status(403).json({ error: 'You do not have upload permission' });
+   }
+ 
+@@ -348,7 +514,6 @@ app.post('/api/rooms/:roomId/upload', upload.array('files', 500), (req, res) =>
+   const parentFolder = room.files.find(f => f.id === parentId && f.type === 'folder');
+   if (!parentFolder) return res.status(400).json({ error: 'Invalid folder' });
+ 
+-  // Parse per-file relative paths (for folder uploads)
+   let paths = [];
+   if (req.body.paths) {
+     try { paths = JSON.parse(req.body.paths); } catch (e) { paths = []; }
+@@ -359,13 +524,12 @@ app.post('/api/rooms/:roomId/upload', upload.array('files', 500), (req, res) =>
+   const added = [];
+   const foldersCreatedBefore = room.files.filter(f => f.type === 'folder').length;
+ 
+-  // --- Ensure any explicitly requested folders exist (supports empty folder uploads) ---
+   let folderPaths = [];
+   if (req.body.folderPaths) {
+     try { folderPaths = JSON.parse(req.body.folderPaths); } catch (e) { folderPaths = []; }
+   }
+   if (!Array.isArray(folderPaths)) folderPaths = [];
+-  // Also infer folder-only paths from the `paths` array (dirs with no files)
++
+   const inferredDirs = new Set();
+   for (const p of paths) {
+     if (typeof p !== 'string') continue;
+@@ -384,7 +548,7 @@ app.post('/api/rooms/:roomId/upload', upload.array('files', 500), (req, res) =>
+ 
+   for (let i = 0; i < (req.files || []).length; i++) {
+     const f = req.files[i];
+-    const relPath = paths[i]; // may be undefined
++    const relPath = paths[i];
+     let fileParentId = parentId;
+     let displayName = sanitizeFilename(f.originalname);
+ 
+@@ -463,7 +627,6 @@ app.delete('/api/rooms/:roomId/files/:fileId', (req, res) => {
+   const fileId = req.params.fileId;
+   if (fileId === 'root') return res.status(400).json({ error: 'Cannot delete root' });
+ 
+-  // Collect all files in subtree
+   const toDelete = new Set();
+   function collect(id) {
+     toDelete.add(id);
+@@ -478,7 +641,7 @@ app.delete('/api/rooms/:roomId/files/:fileId', (req, res) => {
+       removed.push(node);
+       if (node.type === 'file' && node.storageName) {
+         const p = path.join(UPLOADS_DIR, room.id, node.storageName);
+-        try { fs.unlinkSync(p); } catch(e){}
++        try { fs.unlinkSync(p); } catch (e) {}
+       }
+     }
+   }
+@@ -506,10 +669,12 @@ app.patch('/api/rooms/:roomId/files/:fileId', (req, res) => {
+   res.json({ node });
+ });
+ 
+-// Download file
++// Download file — any admitted member (or owner) can download
+ app.get('/api/rooms/:roomId/files/:fileId/download', (req, res) => {
+   const room = getRoom(req.params.roomId);
+   if (!room) return res.status(404).send('Room not found');
++  const user = getUser(room, req.query.userId);
++  if (!user) return res.status(401).send('Not a member');
+   const node = room.files.find(f => f.id === req.params.fileId);
+   if (!node || node.type !== 'file') return res.status(404).send('File not found');
+   const p = path.join(UPLOADS_DIR, room.id, node.storageName);
+@@ -518,20 +683,17 @@ app.get('/api/rooms/:roomId/files/:fileId/download', (req, res) => {
+ });
+ 
+ // Download folder as ZIP (preserves subfolder structure)
+-// Usage: GET /api/rooms/:roomId/folders/:folderId/zip?userId=xxx
+-// Pass fileId='root' to zip the entire room.
++// Any admitted member (or owner) can download.
+ app.get('/api/rooms/:roomId/folders/:folderId/zip', (req, res) => {
+   const room = getRoom(req.params.roomId);
+   if (!room) return res.status(404).send('Room not found');
+-  const userId = req.query.userId;
+-  const user = getUser(room, userId);
++  const user = getUser(room, req.query.userId);
+   if (!user) return res.status(401).send('Not a member');
+ 
+   const folderId = req.params.folderId;
+   const folder = room.files.find(f => f.id === folderId && f.type === 'folder');
+   if (!folder) return res.status(404).send('Folder not found');
+ 
+-  // Collect all descendants (files + folders) under this folder.
+   const descendants = new Set();
+   function collect(id) {
+     descendants.add(id);
+@@ -539,12 +701,9 @@ app.get('/api/rooms/:roomId/folders/:folderId/zip', (req, res) => {
+   }
+   collect(folderId);
+ 
+-  // Build a map of id -> node for quick lookup, and parent id -> name.
+   const byId = {};
+   room.files.forEach(f => { byId[f.id] = f; });
+ 
+-  // Compute ZIP entry path for each file by walking up to the folder root.
+-  // If the downloaded folder is not "root", prefix everything with the folder name.
+   const rootPrefix = folder.id === 'root' ? '' : sanitizeZipName(folder.name) + '/';
+   function zipPathFor(fileNode) {
+     const parts = [];
+@@ -563,18 +722,16 @@ app.get('/api/rooms/:roomId/folders/:folderId/zip', (req, res) => {
+   const archive = new ZipArchive({ zlib: { level: 6 } });
+   archive.on('error', err => {
+     console.error('ZIP error:', err);
+-    try { res.status(500).end(); } catch(e) {}
++    try { res.status(500).end(); } catch (e) {}
+   });
+   archive.pipe(res);
+ 
+-  // Add all files under this folder.
+   let anyFile = false;
+   for (const node of room.files) {
+     if (node.type !== 'file' || !descendants.has(node.id)) continue;
+     const diskPath = path.join(UPLOADS_DIR, room.id, node.storageName);
+     if (!fs.existsSync(diskPath)) continue;
+-    const entryName = zipPathFor(node);
+-    archive.file(diskPath, { name: entryName });
++    archive.file(diskPath, { name: zipPathFor(node) });
+     anyFile = true;
+   }
+ 
+@@ -585,69 +742,12 @@ app.get('/api/rooms/:roomId/folders/:folderId/zip', (req, res) => {
+   archive.finalize();
+ });
+ 
+-function sanitizeZipName(name) {
+-  // Strip characters that are unsafe across OSes, and prevent path traversal.
+-  let n = String(name).replace(/[\/\\\?\%\*\:\|"<>\x00-\x1f]/g, '_').replace(/^\.+/, '_');
+-  return n.slice(0, 200) || 'file';
+-}
+-
+-// Update user permissions (admin/owner only)
+-app.patch('/api/rooms/:roomId/users/:userId/permissions', (req, res) => {
+-  const room = getRoom(req.params.roomId);
+-  if (!room) return res.status(404).json({ error: 'Room not found' });
+-  const actorId = req.body.actorUserId;
+-  const actor = getUser(room, actorId);
+-  if (!actor || (actor.role !== 'owner' && actor.role !== 'admin')) return res.status(403).json({ error: 'Not allowed' });
+-
+-  const targetId = req.params.userId;
+-  const target = getUser(room, targetId);
+-  if (!target) return res.status(404).json({ error: 'User not found' });
+-
+-  // Owner permissions cannot be changed by admins
+-  if (target.role === 'owner') return res.status(403).json({ error: 'Cannot change owner permissions' });
+-  if (actor.role === 'admin' && target.role === 'admin') return res.status(403).json({ error: 'Admins cannot modify other admins' });
+-
+-  const allowedKeys = ['can_chat', 'can_upload', 'can_delete', 'can_create_folder', 'can_rename'];
+-  for (const key of allowedKeys) {
+-    if (typeof req.body.permissions?.[key] === 'boolean') {
+-      target.permissions[key] = req.body.permissions[key];
+-    }
+-  }
+-  saveRooms();
+-  broadcastRoom(room.id, 'users_updated', { users: room.users });
+-  res.json({ user: target });
+-});
+-
+-// Change user role
+-app.patch('/api/rooms/:roomId/users/:userId/role', (req, res) => {
+-  const room = getRoom(req.params.roomId);
+-  if (!room) return res.status(404).json({ error: 'Room not found' });
+-  const actorId = req.body.actorUserId;
+-  const actor = getUser(room, actorId);
+-  if (!actor || actor.role !== 'owner') return res.status(403).json({ error: 'Only owner can change roles' });
+-
+-  const targetId = req.params.userId;
+-  if (targetId === actorId) return res.status(400).json({ error: 'Cannot change your own role' });
+-  const target = getUser(room, targetId);
+-  if (!target) return res.status(404).json({ error: 'User not found' });
+-
+-  const newRole = req.body.role;
+-  if (!['admin', 'member'].includes(newRole)) return res.status(400).json({ error: 'Invalid role' });
+-  target.role = newRole;
+-  target.permissions = defaultPermissions(newRole);
+-  saveRooms();
+-  broadcastRoom(room.id, 'users_updated', { users: room.users });
+-  broadcastRoom(room.id, 'activity', { text: `${actor.name} set ${target.name} as ${newRole}` });
+-  res.json({ user: target });
+-});
+-
+-// Rename room / change expiry
++// Rename room / change expiry — owner only
+ app.patch('/api/rooms/:roomId', (req, res) => {
+   const room = getRoom(req.params.roomId);
+   if (!room) return res.status(404).json({ error: 'Room not found' });
+-  const userId = req.body.userId;
+-  const user = getUser(room, userId);
+-  if (!user || (user.role !== 'owner' && user.role !== 'admin')) return res.status(403).json({ error: 'Not allowed' });
++  const user = getUser(room, req.body.userId);
++  if (!user || user.role !== 'owner') return res.status(403).json({ error: 'Only the owner can change room settings' });
+ 
+   let changed = false;
+   if (typeof req.body.name === 'string') {
+@@ -655,7 +755,6 @@ app.patch('/api/rooms/:roomId', (req, res) => {
+     if (newName && newName !== room.name) { room.name = newName; changed = true; }
+   }
+   if (req.body.expiresInHours != null) {
+-    if (user.role !== 'owner') return res.status(403).json({ error: 'Only the owner can change expiry' });
+     const hours = Number(req.body.expiresInHours);
+     if (Number.isFinite(hours) && hours > 0 && hours <= MAX_EXPIRY_HOURS) {
+       room.expiresAt = Date.now() + Math.round(hours * 60 * 60 * 1000);
+@@ -665,7 +764,6 @@ app.patch('/api/rooms/:roomId', (req, res) => {
+     }
+   }
+   if (req.body.expiresAt != null) {
+-    if (user.role !== 'owner') return res.status(403).json({ error: 'Only the owner can change expiry' });
+     const ts = Number(req.body.expiresAt);
+     const now = Date.now();
+     if (Number.isFinite(ts) && ts > now && ts - now <= MAX_EXPIRY_HOURS * 3600000) {
+@@ -693,18 +791,14 @@ app.delete('/api/rooms/:roomId', (req, res) => {
+   if (!user || user.role !== 'owner') return res.status(403).json({ error: 'Only the owner can delete the room' });
+ 
+   const roomId = room.id;
+-  io.to('room:' + roomId).emit('room_deleted', { reason: 'deleted' });
+-  io.to('room:' + roomId).socketsLeave('room:' + roomId);
++  notifyRoomGone(roomId, 'deleted');
+   deleteRoom(roomId);
+   saveRooms();
+   res.json({ ok: true });
+ });
+ 
+-// ---------- Chat: delete (unsend) message ----------
+-// Rules:
+-//  - A user can delete their own messages (unsend)
+-//  - Owner can delete any message
+-//  - Admins can delete messages by members (but not owner messages, not other admins' messages)
++// Delete (unsend) message
++// Owner can delete any message; members can unsend their own.
+ app.delete('/api/rooms/:roomId/messages/:msgId', (req, res) => {
+   const room = getRoom(req.params.roomId);
+   if (!room) return res.status(404).json({ error: 'Room not found' });
+@@ -716,13 +810,7 @@ app.delete('/api/rooms/:roomId/messages/:msgId', (req, res) => {
+   if (msgIdx === -1) return res.status(404).json({ error: 'Message not found' });
+   const msg = room.messages[msgIdx];
+ 
+-  let allowed = false;
+-  if (actor.role === 'owner') allowed = true;
+-  else if (msg.userId === userId) allowed = true;
+-  else if (actor.role === 'admin') {
+-    const author = getUser(room, msg.userId);
+-    if (author && author.role === 'member') allowed = true;
+-  }
++  const allowed = actor.role === 'owner' || msg.userId === userId;
+   if (!allowed) return res.status(403).json({ error: 'You cannot delete this message' });
+ 
+   room.messages.splice(msgIdx, 1);
+@@ -735,6 +823,28 @@ app.delete('/api/rooms/:roomId/messages/:msgId', (req, res) => {
+ io.on('connection', (socket) => {
+   let currentRoom = null;
+   let currentUserId = null;
++  let currentPendingId = null;
++
++  socket.on('wait_approval', ({ roomId, pendingId }) => {
++    const room = getRoom(roomId);
++    if (!room || !pendingId) {
++      socket.emit('join_rejected', { reason: 'not_found' });
++      return;
++    }
++    const user = getUser(room, pendingId);
++    if (user) {
++      socket.emit('join_approved', roomPublicData(room, pendingId));
++      return;
++    }
++    const pending = getPending(room, pendingId);
++    if (!pending) {
++      socket.emit('join_rejected', { reason: 'not_found' });
++      return;
++    }
++    socket.join('pending:' + pendingId);
++    currentPendingId = pendingId;
++    socket.emit('waiting', { pendingId, name: pending.name, roomName: room.name });
++  });
+ 
+   socket.on('join_room', ({ roomId, userId }) => {
+     const room = getRoom(roomId);
+@@ -748,17 +858,27 @@ io.on('connection', (socket) => {
+     const wasOffline = !onlineUsers[roomId] || !onlineUsers[roomId][userId];
+     setOnline(roomId, userId, socket.id);
+ 
+-    // Notify others of join
+     const user = getUser(room, userId);
++    const presenceUsers = room.users.map(u => ({ ...u, online: !!onlineUsers[roomId][u.id] }));
+     if (wasOffline) {
+-      io.to('room:' + roomId).emit('presence', { users: room.users.map(u => ({ ...u, online: !!onlineUsers[roomId][u.id] })) });
++      io.to('room:' + roomId).emit('presence', { users: presenceUsers });
+       io.to('room:' + roomId).emit('activity', { text: `${user.name} joined the room` });
+     } else {
+-      socket.emit('presence', { users: room.users.map(u => ({ ...u, online: !!onlineUsers[roomId][u.id] })) });
++      socket.emit('presence', { users: presenceUsers });
++    }
++
++    if (user.role === 'owner') {
++      socket.emit('pending_updated', { pendingUsers: room.pendingUsers || [] });
++    }
++
++    const seenUpdates = markMessagesSeen(room, user);
++    if (seenUpdates.length) {
++      saveRooms();
++      io.to('room:' + roomId).emit('seen_update', { updates: seenUpdates });
+     }
+   });
+ 
+-  socket.on('send_message', ({ roomId, userId, text }) => {
++  socket.on('send_message', ({ roomId, userId, text, replyToId }) => {
+     const room = getRoom(roomId);
+     if (!room) return;
+     const user = getUser(room, userId);
+@@ -769,13 +889,28 @@ io.on('connection', (socket) => {
+     }
+     const cleanText = String(text || '').slice(0, 2000).trim();
+     if (!cleanText) return;
++
++    let replyTo = null;
++    if (replyToId) {
++      const orig = room.messages.find(m => m.id === replyToId);
++      if (orig) {
++        replyTo = {
++          id: orig.id,
++          userName: orig.userName,
++          text: String(orig.text || '').slice(0, 200)
++        };
++      }
++    }
++
+     const msg = {
+       id: uid(),
+       userId,
+       userName: user.name,
+       role: user.role,
+       text: cleanText,
+-      ts: Date.now()
++      ts: Date.now(),
++      replyTo,
++      seenBy: {}
+     };
+     room.messages.push(msg);
+     if (room.messages.length > 500) room.messages = room.messages.slice(-500);
+@@ -783,6 +918,28 @@ io.on('connection', (socket) => {
+     io.to('room:' + roomId).emit('new_message', msg);
+   });
+ 
++  socket.on('mark_seen', ({ roomId, userId, messageIds }) => {
++    const room = getRoom(roomId);
++    if (!room) return;
++    const user = getUser(room, userId);
++    if (!user) return;
++    const now = Date.now();
++    const updates = [];
++    const filter = Array.isArray(messageIds) && messageIds.length ? new Set(messageIds) : null;
++    for (const msg of room.messages) {
++      if (filter && !filter.has(msg.id)) continue;
++      if (msg.userId === userId) continue;
++      if (!msg.seenBy || typeof msg.seenBy !== 'object') msg.seenBy = {};
++      if (msg.seenBy[userId]) continue;
++      msg.seenBy[userId] = { ts: now, name: user.name };
++      updates.push({ messageId: msg.id, userId, ts: now, name: user.name });
++    }
++    if (updates.length) {
++      saveRooms();
++      io.to('room:' + roomId).emit('seen_update', { updates });
++    }
++  });
++
+   socket.on('typing', ({ roomId, userId, isTyping }) => {
+     const room = getRoom(roomId);
+     if (!room) return;
+@@ -797,12 +954,18 @@ io.on('connection', (socket) => {
+       setOffline(currentRoom, currentUserId);
+       if (room) {
+         const user = getUser(room, currentUserId);
+-        io.to('room:' + currentRoom).emit('presence', { users: room.users.map(u => ({ ...u, online: !!(onlineUsers[currentRoom] && onlineUsers[currentRoom][u.id]) })) });
++        io.to('room:' + currentRoom).emit('presence', {
++          users: room.users.map(u => ({
++            ...u,
++            online: !!(onlineUsers[currentRoom] && onlineUsers[currentRoom][u.id])
++          }))
++        });
+         if (user) {
+           io.to('room:' + currentRoom).emit('activity', { text: `${user.name} went offline` });
+         }
+       }
+     }
++    currentPendingId = null;
+   });
+ });
+ 
