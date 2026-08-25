@@ -510,6 +510,29 @@ function publicUsers(room) {
   }));
 }
 
+// Owner updates a member's permissions
+app.patch('/api/rooms/:roomId/users/:userId/permissions', (req, res) => {
+  const room = getRoom(req.params.roomId);
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+  const actor = getUser(room, req.body.actorUserId);
+  if (!actor || actor.role !== 'owner') return res.status(403).json({ error: 'Only the owner can change permissions' });
+
+  const target = getUser(room, req.params.userId);
+  if (!target) return res.status(404).json({ error: 'User not found' });
+  if (target.role === 'owner') return res.status(403).json({ error: 'Cannot change owner permissions' });
+
+  const allowedKeys = ['can_chat', 'can_upload', 'can_delete', 'can_create_folder', 'can_rename'];
+  for (const key of allowedKeys) {
+    if (typeof req.body.permissions?.[key] === 'boolean') {
+      target.permissions[key] = req.body.permissions[key];
+    }
+  }
+  saveRooms();
+  broadcastRoom(room.id, 'users_updated', { users: publicUsers(room) });
+  broadcastRoom(room.id, 'activity', { text: `${actor.name} updated ${target.name}'s permissions` });
+  res.json({ user: target });
+});
+
 // Owner removes a member from the room
 app.delete('/api/rooms/:roomId/users/:userId', (req, res) => {
   const room = getRoom(req.params.roomId);

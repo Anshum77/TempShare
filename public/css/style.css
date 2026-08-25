@@ -98,6 +98,7 @@
 /* Modal flex */
 #expiryModal[style*="flex"],
 #seenModal[style*="flex"],
+#permModal[style*="flex"],
 #nameModal[style*="flex"],
 #waitingOverlay[style*="flex"] { display: flex !important; }
 

@@ -30,6 +30,7 @@ const els = {
   deleteRoomBtn: document.getElementById('deleteRoomBtn'),
   leaveRoomBtn: document.getElementById('leaveRoomBtn'),
   clearChatBtn: document.getElementById('clearChatBtn'),
+  clearChatHeaderBtn: document.getElementById('clearChatHeaderBtn'),
   copyLinkBtn: document.getElementById('copyLinkBtn'),
   toggleSidebar: document.getElementById('toggleSidebar'),
   sidebar: document.getElementById('sidebar'),
@@ -70,6 +71,11 @@ const els = {
   waitingOverlay: document.getElementById('waitingOverlay'),
   waitingText: document.getElementById('waitingText'),
   cancelWaitBtn: document.getElementById('cancelWaitBtn'),
+  permModal: document.getElementById('permModal'),
+  closePermModal: document.getElementById('closePermModal'),
+  permTitle: document.getElementById('permTitle'),
+  permSubtitle: document.getElementById('permSubtitle'),
+  permBody: document.getElementById('permBody'),
 };
 
 // ---------- Utilities ----------
@@ -398,6 +404,14 @@ function renderHeader() {
   els.deleteRoomBtn.classList.toggle('flex', isOwner);
   els.leaveRoomBtn.classList.toggle('hidden', isOwner);
   els.leaveRoomBtn.classList.toggle('flex', !isOwner);
+  if (els.clearChatBtn) {
+    els.clearChatBtn.classList.toggle('hidden', !isOwner);
+    els.clearChatBtn.classList.toggle('flex', isOwner);
+  }
+  if (els.clearChatHeaderBtn) {
+    els.clearChatHeaderBtn.classList.toggle('hidden', !isOwner);
+    els.clearChatHeaderBtn.classList.toggle('flex', isOwner);
+  }
   els.expiryBadge.classList.remove('hidden');
   els.expiryBadge.classList.add('flex');
 
@@ -483,8 +497,18 @@ function renderUsers() {
         </div>
         <div class="text-[11px] text-slate-500">${u.online ? 'Online' : 'Offline'}</div>
       </div>
-      ${canRemove ? `<button class="remove-btn shrink-0 px-2 py-1 rounded-md bg-slate-700 hover:bg-red-600/80 text-[11px] font-semibold transition" title="Remove ${escapeHtml(u.name)} from the room">Remove</button>` : ''}
+      ${canRemove ? `<div class="flex items-center gap-1 shrink-0">
+        <button class="perm-btn p-1.5 rounded-md hover:bg-slate-700 text-slate-300" title="Change permissions">
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+        </button>
+        <button class="remove-btn px-2 py-1 rounded-md bg-slate-700 hover:bg-red-600/80 text-[11px] font-semibold transition" title="Remove ${escapeHtml(u.name)} from the room">Remove</button>
+      </div>` : ''}
     `;
+    const permBtn = row.querySelector('.perm-btn');
+    if (permBtn) permBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openPermModal(u);
+    });
     const removeBtn = row.querySelector('.remove-btn');
     if (removeBtn) removeBtn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -808,6 +832,71 @@ async function deleteMessage(msgId) {
     await api(`/api/rooms/${roomId}/messages/${msgId}?userId=${state.userId}`, { method: 'DELETE' });
     state.room.messages = state.room.messages.filter(m => m.id !== msgId);
     renderMessages();
+  } catch (e) { showToast(e.message, true); }
+}
+
+let permTarget = null;
+function openPermModal(user) {
+  permTarget = user;
+  if (!els.permModal) return;
+  els.permTitle.textContent = user.name;
+  els.permSubtitle.textContent = 'Toggle what this member can do';
+
+  if (user.role === 'owner') {
+    els.permBody.innerHTML = '<p class="text-sm text-slate-400">The room owner has full permissions and cannot be restricted.</p>';
+    els.permModal.style.display = 'flex';
+    return;
+  }
+
+  const fields = [
+    { key: 'can_chat', label: 'Can send chat messages', icon: '💬' },
+    { key: 'can_upload', label: 'Can upload files', icon: '⬆️' },
+    { key: 'can_create_folder', label: 'Can create folders', icon: '📁' },
+    { key: 'can_delete', label: 'Can delete files/folders', icon: '🗑️' },
+    { key: 'can_rename', label: 'Can rename items', icon: '✏️' },
+  ];
+
+  els.permBody.innerHTML = '';
+  for (const f of fields) {
+    const enabled = user.permissions && user.permissions[f.key] === true;
+    const row = document.createElement('label');
+    row.className = 'flex items-center justify-between p-3 bg-slate-900/50 rounded-lg cursor-pointer hover:bg-slate-900';
+    row.innerHTML = `
+      <span class="flex items-center gap-2 text-sm"><span>${f.icon}</span>${f.label}</span>
+      <div class="relative">
+        <input type="checkbox" data-key="${f.key}" ${enabled ? 'checked' : ''} class="peer sr-only perm-toggle" />
+        <div class="w-11 h-6 bg-slate-600 rounded-full peer-checked:bg-pink-500 transition"></div>
+        <div class="absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition peer-checked:translate-x-5"></div>
+      </div>
+    `;
+    els.permBody.appendChild(row);
+  }
+  els.permBody.querySelectorAll('.perm-toggle').forEach(cb => {
+    cb.addEventListener('change', () => {
+      updatePermissions(user.id, { [cb.dataset.key]: cb.checked });
+      if (permTarget && permTarget.id === user.id) {
+        permTarget.permissions = permTarget.permissions || {};
+        permTarget.permissions[cb.dataset.key] = cb.checked;
+      }
+    });
+  });
+  els.permModal.style.display = 'flex';
+}
+
+function closePermModalFn() {
+  if (els.permModal) els.permModal.style.display = 'none';
+  permTarget = null;
+}
+
+async function updatePermissions(targetUserId, perms) {
+  try {
+    await api(`/api/rooms/${roomId}/users/${targetUserId}/permissions`, {
+      method: 'PATCH',
+      body: JSON.stringify({ actorUserId: state.userId, permissions: perms })
+    });
+    const u = state.room.users.find(x => x.id === targetUserId);
+    if (u) u.permissions = { ...(u.permissions || {}), ...perms };
+    showToast('Permissions updated');
   } catch (e) { showToast(e.message, true); }
 }
 
@@ -1350,6 +1439,10 @@ els.saveExpiryBtn.addEventListener('click', () => {
 
 els.deleteRoomBtn.addEventListener('click', deleteRoom);
 els.leaveRoomBtn.addEventListener('click', leaveRoom);
+if (els.clearChatBtn) els.clearChatBtn.addEventListener('click', clearChat);
+if (els.clearChatHeaderBtn) els.clearChatHeaderBtn.addEventListener('click', clearChat);
+if (els.closePermModal) els.closePermModal.addEventListener('click', closePermModalFn);
+if (els.permModal) els.permModal.addEventListener('click', (e) => { if (e.target === els.permModal) closePermModalFn(); });
 
 els.closeSeenModal.addEventListener('click', closeSeenModal);
 els.seenModal.addEventListener('click', (e) => { if (e.target === els.seenModal) closeSeenModal(); });
@@ -1392,6 +1485,7 @@ document.addEventListener('keydown', (e) => {
   const dialogOpen = document.getElementById('dialog')?.style?.display === 'flex'
                   || els.expiryModal?.style?.display === 'flex'
                   || els.seenModal?.style?.display === 'flex'
+                  || els.permModal?.style?.display === 'flex'
                   || els.nameModal?.style?.display === 'flex';
   if (dialogOpen) return;
 

@@ -24,7 +24,8 @@ Inspired by a mix of Google Drive + WhatsApp + Discord, but ephemeral and link-b
 - ⏳ **Custom auto-expiry (1 hour → 1 year)** — choose when creating, owner can change anytime; everything (files + chat) is permanently wiped when the timer runs out.
 - 🚪 **Leave / Delete** — members can leave (they must be re-approved to come back). If the owner leaves or hits Delete, the room and all files are destroyed.
 - 🚫 **Owner can remove any member** — kick them out of the room; they must be re-approved to rejoin.
-- 🧹 **Owner “Clear chat”** — wipe every message for everyone. Members cannot do this.
+- ⚙️ **Owner can change member permissions** — toggle chat / upload / create folders / delete / rename per person.
+- 🧹 **Owner “Clear Chat”** — button in the room header; wipes every message for everyone. Members cannot do this. — wipe every message for everyone. Members cannot do this.
 - 📱 **Responsive UI** — works on desktop and mobile.
 - 📋 **Copy invite link** button for easy sharing.
 - 🕐 Activity feed showing who joined / uploaded / left / updated settings.
