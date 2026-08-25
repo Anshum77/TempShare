@@ -51,6 +51,11 @@ const els = {
   folderInput: document.getElementById('folderInput'),
   dropZone: document.getElementById('dropZone'),
   dropOverlay: document.getElementById('dropOverlay'),
+  uploadProgress: document.getElementById('uploadProgress'),
+  uploadProgressTitle: document.getElementById('uploadProgressTitle'),
+  uploadProgressDetail: document.getElementById('uploadProgressDetail'),
+  uploadProgressPct: document.getElementById('uploadProgressPct'),
+  uploadProgressBar: document.getElementById('uploadProgressBar'),
   messages: document.getElementById('messages'),
   chatForm: document.getElementById('chatForm'),
   chatInput: document.getElementById('chatInput'),
@@ -993,6 +998,58 @@ async function requestJoin(name) {
   }
 }
 
+let uploadUi = { lastEmit: 0, hideTimer: null, local: false };
+
+function setUploadProgress({ title, detail, percent, error, done, local = true }) {
+  if (!els.uploadProgress) return;
+  const pct = Math.max(0, Math.min(100, Math.round(percent || 0)));
+  els.uploadProgress.classList.remove('hidden');
+  if (els.uploadProgressTitle) els.uploadProgressTitle.textContent = title || 'Uploading…';
+  if (els.uploadProgressDetail) {
+    els.uploadProgressDetail.textContent = detail || '';
+    els.uploadProgressDetail.classList.toggle('text-red-400', !!error);
+    els.uploadProgressDetail.classList.toggle('text-slate-400', !error);
+  }
+  if (els.uploadProgressPct) {
+    els.uploadProgressPct.textContent = done && !error ? 'Done' : (error ? 'Failed' : pct + '%');
+    els.uploadProgressPct.classList.toggle('text-red-400', !!error);
+    els.uploadProgressPct.classList.toggle('text-emerald-300', !!(done && !error));
+    els.uploadProgressPct.classList.toggle('text-pink-300', !error && !done);
+  }
+  if (els.uploadProgressBar) {
+    els.uploadProgressBar.style.width = pct + '%';
+    els.uploadProgressBar.classList.toggle('bg-red-500', !!error);
+  }
+  uploadUi.local = local;
+  clearTimeout(uploadUi.hideTimer);
+  if (done || error) {
+    uploadUi.hideTimer = setTimeout(hideUploadProgress, error ? 4000 : 1800);
+  }
+}
+
+function hideUploadProgress() {
+  if (!els.uploadProgress) return;
+  els.uploadProgress.classList.add('hidden');
+  if (els.uploadProgressBar) els.uploadProgressBar.style.width = '0%';
+  uploadUi.local = false;
+}
+
+function emitUploadProgress(payload) {
+  const now = Date.now();
+  if (!payload.done && !payload.error && now - uploadUi.lastEmit < 250) return;
+  uploadUi.lastEmit = now;
+  if (!state.userId) return;
+  socket.emit('upload_progress', {
+    roomId,
+    userId: state.userId,
+    percent: payload.percent || 0,
+    label: payload.title || 'Uploading…',
+    detail: payload.detail || '',
+    done: !!payload.done,
+    error: !!payload.error
+  });
+}
+
 async function uploadFiles(fileList, paths = null, folderPaths = null) {
   if (!can('can_upload')) return showToast('No upload permission', true);
   const files = Array.from(fileList);
@@ -1008,12 +1065,29 @@ async function uploadFiles(fileList, paths = null, folderPaths = null) {
     fd.append('folderPaths', JSON.stringify(folderPaths));
   }
   const totalSize = files.reduce((s, f) => s + f.size, 0);
-  const folderMsg = folderPaths && folderPaths.length ? ` (${folderPaths.length} folder(s))` : '';
-  showToast(`Uploading ${files.length} file(s)${folderMsg} — ${formatSize(totalSize)}`);
+  const folderCount = folderPaths && folderPaths.length ? folderPaths.length : 0;
+  const title = folderCount
+    ? `Uploading folder (${files.length} file${files.length === 1 ? '' : 's'})`
+    : `Uploading ${files.length} file${files.length === 1 ? '' : 's'}`;
+  const start = { title, detail: formatSize(totalSize) + ' total', percent: 0, local: true };
+  setUploadProgress(start);
+  emitUploadProgress(start);
   try {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', `/api/rooms/${roomId}/upload`);
     await new Promise((resolve, reject) => {
+      xhr.upload.onprogress = (e) => {
+        if (!e.lengthComputable) return;
+        const percent = e.total ? (e.loaded / e.total) * 100 : 0;
+        const payload = {
+          title,
+          detail: `${formatSize(e.loaded)} / ${formatSize(e.total)}`,
+          percent,
+          local: true
+        };
+        setUploadProgress(payload);
+        emitUploadProgress(payload);
+      };
       xhr.onload = () => {
         if (xhr.status >= 200 && xhr.status < 300) resolve(xhr.response);
         else {
@@ -1024,8 +1098,20 @@ async function uploadFiles(fileList, paths = null, folderPaths = null) {
       xhr.onerror = () => reject(new Error('Network error'));
       xhr.send(fd);
     });
-    showToast(`Uploaded ${files.length} file(s)${folderMsg} successfully`);
+    const done = {
+      title: folderCount ? 'Folder uploaded' : 'Upload complete',
+      detail: `${files.length} file${files.length === 1 ? '' : 's'} · ${formatSize(totalSize)}`,
+      percent: 100,
+      done: true,
+      local: true
+    };
+    setUploadProgress(done);
+    emitUploadProgress(done);
+    showToast(`Uploaded ${files.length} file(s)${folderCount ? ` in ${folderCount} folder(s)` : ''} successfully`);
   } catch (e) {
+    const fail = { title: 'Upload failed', detail: e.message, percent: 0, error: true, local: true };
+    setUploadProgress(fail);
+    emitUploadProgress(fail);
     showToast('Upload failed: ' + e.message, true);
   }
 }
@@ -1230,6 +1316,18 @@ socket.on('room_deleted', ({ reason }) => {
   clearIdentity();
   showToast(reason === 'expired' ? 'This room has expired and was deleted' : 'This room was deleted by the owner', true);
   setTimeout(() => window.location.href = '/', 2000);
+});
+
+socket.on('upload_progress', ({ userId, userName, percent, label, detail, done, error }) => {
+  if (userId === state.userId) return;
+  setUploadProgress({
+    title: `${userName || 'Someone'} — ${label || 'Uploading…'}`,
+    detail: detail || '',
+    percent,
+    done,
+    error,
+    local: false
+  });
 });
 
 socket.on('activity', ({ text }) => {

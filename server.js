@@ -1009,6 +1009,22 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('upload_progress', ({ roomId, userId, percent, label, detail, done, error }) => {
+    const room = getRoom(roomId);
+    if (!room) return;
+    const user = getUser(room, userId);
+    if (!user) return;
+    socket.to('room:' + roomId).emit('upload_progress', {
+      userId,
+      userName: user.name,
+      percent: Number(percent) || 0,
+      label: String(label || 'Uploading…').slice(0, 120),
+      detail: String(detail || '').slice(0, 160),
+      done: !!done,
+      error: !!error
+    });
+  });
+
   socket.on('typing', ({ roomId, userId, isTyping }) => {
     const room = getRoom(roomId);
     if (!room) return;
