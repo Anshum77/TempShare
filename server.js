@@ -500,6 +500,52 @@ app.post('/api/rooms/:roomId/leave', (req, res) => {
   res.json({ ok: true });
 });
 
+function publicUsers(room) {
+  return room.users.map(u => ({
+    id: u.id,
+    name: u.name,
+    role: u.role,
+    permissions: u.permissions,
+    online: !!onlineUsers[room.id]?.[u.id]
+  }));
+}
+
+// Owner removes a member from the room
+app.delete('/api/rooms/:roomId/users/:userId', (req, res) => {
+  const room = getRoom(req.params.roomId);
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+  const actor = getUser(room, req.body.actorUserId || req.query.actorUserId);
+  if (!actor || actor.role !== 'owner') return res.status(403).json({ error: 'Only the owner can remove members' });
+
+  const targetId = req.params.userId;
+  if (targetId === actor.id) return res.status(400).json({ error: 'You cannot remove yourself. Delete the room instead.' });
+  const target = getUser(room, targetId);
+  if (!target) return res.status(404).json({ error: 'User not found' });
+  if (target.role === 'owner') return res.status(403).json({ error: 'Cannot remove the owner' });
+
+  const name = target.name;
+  room.users = room.users.filter(u => u.id !== targetId);
+  saveRooms();
+  kickUserSocket(room.id, targetId, 'forced_leave', { reason: 'removed' });
+  broadcastRoom(room.id, 'users_updated', { users: publicUsers(room) });
+  broadcastRoom(room.id, 'activity', { text: `${actor.name} removed ${name} from the room` });
+  res.json({ ok: true });
+});
+
+// Owner clears the entire chat
+app.delete('/api/rooms/:roomId/messages', (req, res) => {
+  const room = getRoom(req.params.roomId);
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+  const actor = getUser(room, req.body.userId || req.query.userId);
+  if (!actor || actor.role !== 'owner') return res.status(403).json({ error: 'Only the owner can clear chat' });
+
+  room.messages = [];
+  saveRooms();
+  broadcastRoom(room.id, 'chat_cleared', { clearedBy: actor.id, clearedByName: actor.name });
+  broadcastRoom(room.id, 'activity', { text: `${actor.name} cleared the chat` });
+  res.json({ ok: true });
+});
+
 // Upload files (supports nested folder uploads via `paths` JSON array)
 app.post('/api/rooms/:roomId/upload', upload.array('files', 500), (req, res) => {
   const room = getRoom(req.params.roomId);

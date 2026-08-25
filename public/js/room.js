@@ -29,6 +29,7 @@ const els = {
   saveExpiryBtn: document.getElementById('saveExpiryBtn'),
   deleteRoomBtn: document.getElementById('deleteRoomBtn'),
   leaveRoomBtn: document.getElementById('leaveRoomBtn'),
+  clearChatBtn: document.getElementById('clearChatBtn'),
   copyLinkBtn: document.getElementById('copyLinkBtn'),
   toggleSidebar: document.getElementById('toggleSidebar'),
   sidebar: document.getElementById('sidebar'),
@@ -461,6 +462,8 @@ function renderUsers() {
   els.userList.innerHTML = '';
   for (const u of sorted) {
     const isMe = u.id === state.userId;
+    const iAmOwner = me() && me().role === 'owner';
+    const canRemove = iAmOwner && !isMe && u.role !== 'owner';
     const roleBadge = u.role === 'owner'
       ? '<span class="text-[10px] font-bold bg-gradient-to-r from-pink-600 to-purple-600 px-2 py-0.5 rounded-full">OWNER</span>'
       : '';
@@ -480,7 +483,13 @@ function renderUsers() {
         </div>
         <div class="text-[11px] text-slate-500">${u.online ? 'Online' : 'Offline'}</div>
       </div>
+      ${canRemove ? `<button class="remove-btn shrink-0 px-2 py-1 rounded-md bg-slate-700 hover:bg-red-600/80 text-[11px] font-semibold transition" title="Remove ${escapeHtml(u.name)} from the room">Remove</button>` : ''}
     `;
+    const removeBtn = row.querySelector('.remove-btn');
+    if (removeBtn) removeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      removeMember(u);
+    });
     els.userList.appendChild(row);
   }
 
@@ -802,6 +811,40 @@ async function deleteMessage(msgId) {
   } catch (e) { showToast(e.message, true); }
 }
 
+async function removeMember(user) {
+  const ok = await Dialog.confirm(
+    `${user.name} will be kicked out immediately and will need your approval to rejoin.`,
+    `Remove ${user.name}?`,
+    { okText: 'Remove', danger: true }
+  );
+  if (!ok) return;
+  try {
+    await api(`/api/rooms/${roomId}/users/${user.id}`, {
+      method: 'DELETE',
+      body: JSON.stringify({ actorUserId: state.userId })
+    });
+    state.room.users = state.room.users.filter(u => u.id !== user.id);
+    renderUsers();
+    showToast(`${user.name} was removed`);
+  } catch (e) { showToast(e.message, true); }
+}
+
+async function clearChat() {
+  const ok = await Dialog.confirm(
+    'Every message in this room will be deleted for everyone. This cannot be undone.',
+    'Clear all chat?',
+    { okText: 'Clear chat', danger: true }
+  );
+  if (!ok) return;
+  try {
+    await api(`/api/rooms/${roomId}/messages?userId=${state.userId}`, { method: 'DELETE' });
+    state.room.messages = [];
+    clearReply();
+    renderMessages();
+    showToast('Chat cleared');
+  } catch (e) { showToast(e.message, true); }
+}
+
 function updateChatPermission() {
   const chatOk = can('can_chat');
   els.chatInput.disabled = !chatOk;
@@ -1080,10 +1123,22 @@ socket.on('join_rejected', ({ reason }) => {
   setTimeout(() => window.location.href = '/', 1800);
 });
 
-socket.on('forced_leave', () => {
+socket.on('forced_leave', ({ reason } = {}) => {
   clearIdentity();
-  showToast('You left the room');
+  if (reason === 'removed') {
+    showToast('The owner removed you from the room', true);
+  } else {
+    showToast('You left the room');
+  }
   setTimeout(() => window.location.href = '/', 800);
+});
+
+socket.on('chat_cleared', ({ clearedByName }) => {
+  if (!state.room) return;
+  state.room.messages = [];
+  clearReply();
+  renderMessages();
+  showToast(`${clearedByName || 'The owner'} cleared the chat`);
 });
 
 socket.on('room_deleted', ({ reason }) => {
