@@ -23,6 +23,27 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
+// ---------- Health check for UptimeRobot ----------
+app.get('/healthz', (req, res) => {
+  res.status(200).json({
+    status: 'ok',
+    uptime: Math.floor(process.uptime()),
+    timestamp: new Date().toISOString()
+  });
+});
+
+// ---------- Ensure required directories exist ----------
+function ensureDir(dir) {
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+ensureDir(path.dirname(DATA_FILE)); // data/
+ensureDir(UPLOADS_DIR);             // uploads/
+
 // ---------- Ensure required directories exist ----------
 function ensureDir(dir) {
   try { fs.mkdirSync(dir, { recursive: true }); } catch (e) { /* ignore */ }
