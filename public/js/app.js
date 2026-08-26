@@ -26,6 +26,11 @@ createBtn.addEventListener('click', async () => {
   const name = nameInput.value.trim() || ('Guest_' + Math.floor(Math.random() * 1000));
   const expirySelect = document.getElementById('expirySelect');
   const expiresInHours = Number(expirySelect?.value || 24);
+  const passkey = (document.getElementById('passkeyInput')?.value || '').trim();
+  const passkeyConfirm = (document.getElementById('passkeyConfirmInput')?.value || '').trim();
+  if (passkey.length < 4) return showToast('Passkey must be at least 4 characters', true);
+  if (passkey.length > 64) return showToast('Passkey is too long', true);
+  if (passkey !== passkeyConfirm) return showToast('Passkeys do not match', true);
   localStorage.setItem('ts_lastname', name);
   createBtn.disabled = true;
   createBtn.innerHTML = '<span class="animate-spin">⏳</span> Creating...';
@@ -33,7 +38,7 @@ createBtn.addEventListener('click', async () => {
     const res = await fetch('/api/rooms', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, roomName: roomNameInput.value.trim(), expiresInHours })
+      body: JSON.stringify({ name, roomName: roomNameInput.value.trim(), expiresInHours, passkey })
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Failed');

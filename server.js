@@ -140,6 +140,29 @@ function sanitizeFilename(name) {
   return name.replace(/[\/\\\?\%\*\:\|"<>\x00-\x1f]/g, '_').slice(0, 200);
 }
 
+function hashPasskey(passkey, salt) {
+  return crypto.scryptSync(String(passkey), salt, 32).toString('hex');
+}
+
+function makePasskeyRecord(plain) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  return { salt, hash: hashPasskey(plain, salt) };
+}
+
+function verifyPasskey(room, plain) {
+  const rec = room && room.ownerPasskey;
+  if (!rec || !rec.hash || !rec.salt) return false;
+  let a, b;
+  try {
+    a = Buffer.from(hashPasskey(plain, rec.salt), 'hex');
+    b = Buffer.from(String(rec.hash), 'hex');
+  } catch (e) {
+    return false;
+  }
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
 function defaultPermissions(role) {
   if (role === 'owner') {
     return { can_chat: true, can_upload: true, can_delete: true, can_create_folder: true, can_rename: true };
@@ -318,6 +341,13 @@ app.post('/api/rooms', (req, res) => {
   const ownerId = uid();
   const ownerName = (req.body.name && String(req.body.name).trim()) || 'Owner';
   const roomName = (req.body.roomName && String(req.body.roomName).trim()) || 'Untitled Room';
+  const passkey = req.body.passkey == null ? '' : String(req.body.passkey);
+  if (passkey.length < 4) {
+    return res.status(400).json({ error: 'Owner passkey must be at least 4 characters' });
+  }
+  if (passkey.length > 64) {
+    return res.status(400).json({ error: 'Owner passkey is too long' });
+  }
 
   const now = Date.now();
   let expiryMs = DEFAULT_EXPIRY_HOURS * 60 * 60 * 1000;
@@ -355,6 +385,7 @@ app.post('/api/rooms', (req, res) => {
       joinedAt: now
     }],
     pendingUsers: [],
+    ownerPasskey: makePasskeyRecord(passkey),
     files: [{ id: 'root', name: 'root', type: 'folder', parentId: null, createdAt: now }],
     messages: []
   };
@@ -400,6 +431,87 @@ app.post('/api/rooms/:roomId/join', (req, res) => {
   broadcastRoom(room.id, 'pending_updated', { pendingUsers: room.pendingUsers });
   broadcastRoom(room.id, 'join_request', { id: pendingId, name });
   res.json({ status: 'pending', pendingId, name, roomName: room.name });
+});
+
+// Public room info (safe to show on the join screen)
+app.get('/api/rooms/:roomId/info', (req, res) => {
+  const room = getRoom(req.params.roomId);
+  if (!room) return res.status(404).json({ error: 'Room not found or expired' });
+  res.json({
+    name: room.name,
+    hasOwnerPasskey: !!(room.ownerPasskey && room.ownerPasskey.hash)
+  });
+});
+
+// Reclaim ownership with the room passkey (after lost site data)
+app.post('/api/rooms/:roomId/reclaim', (req, res) => {
+  const room = getRoom(req.params.roomId);
+  if (!room) return res.status(404).json({ error: 'Room not found or expired' });
+  if (!room.ownerPasskey || !room.ownerPasskey.hash) {
+    return res.status(400).json({ error: 'This room has no owner passkey' });
+  }
+  const passkey = req.body.passkey == null ? '' : String(req.body.passkey);
+  if (!verifyPasskey(room, passkey)) {
+    return res.status(403).json({ error: 'Wrong passkey' });
+  }
+
+  const name = (req.body.name && String(req.body.name).trim().slice(0, 40)) || 'Owner';
+  let userId = req.body.userId;
+  let user = userId ? getUser(room, userId) : null;
+  const pending = userId ? getPending(room, userId) : null;
+
+  for (const u of room.users) {
+    if (u.role === 'owner' && (!user || u.id !== user.id)) {
+      u.role = 'member';
+      u.permissions = defaultPermissions('member');
+    }
+  }
+
+  if (pending) {
+    room.pendingUsers = (room.pendingUsers || []).filter(p => p.id !== pending.id);
+    if (!user) {
+      user = {
+        id: pending.id,
+        name: name || pending.name,
+        role: 'owner',
+        permissions: defaultPermissions('owner'),
+        joinedAt: Date.now()
+      };
+      room.users.push(user);
+    }
+    userId = user.id;
+  }
+
+  if (!user) {
+    userId = uid();
+    user = {
+      id: userId,
+      name,
+      role: 'owner',
+      permissions: defaultPermissions('owner'),
+      joinedAt: Date.now()
+    };
+    room.users.push(user);
+  } else {
+    user.name = name;
+    user.role = 'owner';
+    user.permissions = defaultPermissions('owner');
+  }
+
+  room.ownerId = user.id;
+  saveRooms();
+  broadcastRoom(room.id, 'users_updated', {
+    users: room.users.map(u => ({
+      id: u.id,
+      name: u.name,
+      role: u.role,
+      permissions: u.permissions,
+      online: !!onlineUsers[room.id]?.[u.id]
+    }))
+  });
+  broadcastRoom(room.id, 'pending_updated', { pendingUsers: room.pendingUsers || [] });
+  broadcastRoom(room.id, 'activity', { text: `${user.name} reclaimed ownership` });
+  res.json(roomPublicData(room, user.id));
 });
 
 // Get room (admitted members only)

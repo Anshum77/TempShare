@@ -1,0 +1,299 @@
+diff --git a/README.md b/README.md
+index 2858a72..c1ad709 100644
+--- a/README.md
++++ b/README.md
+@@ -10,6 +10,7 @@ Inspired by a mix of Google Drive + WhatsApp + Discord, but ephemeral and link-b
+ ## ✨ Features
+ 
+ - 🔗 **One-click room creation** — click "Create a Room", get a shareable link instantly.
++- 🔑 **Owner passkey** — set when creating the room. If you clear site data, enter the passkey on the join screen to become owner again.
+ - 🚪 **Owner waiting room** — people who open the invite sit in a waiting room until the owner admits or declines them.
+ - 👥 **Two roles only**
+   - **Owner** — full administrative control (admit/deny, rename room, change expiry, delete files/folders, delete the room).
+diff --git a/public/index.html b/public/index.html
+index 9ac7edf..6ebc9fd 100644
+--- a/public/index.html
++++ b/public/index.html
+@@ -51,6 +51,14 @@
+         </select>
+         <p class="text-xs text-white/50 mt-1">Rooms (files + chat) are permanently deleted when the timer expires.</p>
+       </div>
++      <div>
++        <label class="block text-sm font-medium text-white/80 mb-2">Owner passkey</label>
++        <input id="passkeyInput" type="password" placeholder="Choose a passkey (min 4 characters)" minlength="4" maxlength="64" autocomplete="new-password"
++          class="w-full px-4 py-3 bg-white/10 border border-white/20 rounded-xl text-white placeholder-white/40 focus:outline-none focus:ring-2 focus:ring-pink-400 focus:border-transparent"/>
++        <input id="passkeyConfirmInput" type="password" placeholder="Confirm passkey" minlength="4" maxlength="64" autocomplete="new-password"
++          class="w-full mt-2 px-4 py-3 bg-white/10 border border-white/20 rounded-xl text-white placeholder-white/40 focus:outline-none focus:ring-2 focus:ring-pink-400 focus:border-transparent"/>
++        <p class="text-xs text-white/50 mt-1">If you clear site data, this passkey lets you become the owner again. Do not share it.</p>
++      </div>
+       <button id="createBtn" class="w-full py-4 bg-gradient-to-r from-pink-500 to-indigo-500 hover:from-pink-400 hover:to-indigo-400 rounded-xl font-bold text-lg shadow-lg hover:shadow-pink-500/50 transition transform hover:-translate-y-0.5 flex items-center justify-center gap-2">
+         <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+           <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
+diff --git a/public/js/app.js b/public/js/app.js
+index 9cb1037..bf6028f 100644
+--- a/public/js/app.js
++++ b/public/js/app.js
+@@ -26,6 +26,11 @@ createBtn.addEventListener('click', async () => {
+   const name = nameInput.value.trim() || ('Guest_' + Math.floor(Math.random() * 1000));
+   const expirySelect = document.getElementById('expirySelect');
+   const expiresInHours = Number(expirySelect?.value || 24);
++  const passkey = (document.getElementById('passkeyInput')?.value || '').trim();
++  const passkeyConfirm = (document.getElementById('passkeyConfirmInput')?.value || '').trim();
++  if (passkey.length < 4) return showToast('Passkey must be at least 4 characters', true);
++  if (passkey.length > 64) return showToast('Passkey is too long', true);
++  if (passkey !== passkeyConfirm) return showToast('Passkeys do not match', true);
+   localStorage.setItem('ts_lastname', name);
+   createBtn.disabled = true;
+   createBtn.innerHTML = '<span class="animate-spin">⏳</span> Creating...';
+@@ -33,7 +38,7 @@ createBtn.addEventListener('click', async () => {
+     const res = await fetch('/api/rooms', {
+       method: 'POST',
+       headers: { 'Content-Type': 'application/json' },
+-      body: JSON.stringify({ name, roomName: roomNameInput.value.trim(), expiresInHours })
++      body: JSON.stringify({ name, roomName: roomNameInput.value.trim(), expiresInHours, passkey })
+     });
+     const data = await res.json();
+     if (!res.ok) throw new Error(data.error || 'Failed');
+diff --git a/public/js/room.js b/public/js/room.js
+index 2dba7c6..3c35c6d 100644
+--- a/public/js/room.js
++++ b/public/js/room.js
+@@ -72,6 +72,9 @@ const els = {
+   nameModal: document.getElementById('nameModal'),
+   joinNameInput: document.getElementById('joinNameInput'),
+   joinNameBtn: document.getElementById('joinNameBtn'),
++  ownerPasskeySection: document.getElementById('ownerPasskeySection'),
++  ownerPasskeyInput: document.getElementById('ownerPasskeyInput'),
++  ownerPasskeyBtn: document.getElementById('ownerPasskeyBtn'),
+   waitingOverlay: document.getElementById('waitingOverlay'),
+   waitingText: document.getElementById('waitingText'),
+   cancelWaitBtn: document.getElementById('cancelWaitBtn'),
+@@ -363,9 +366,20 @@ function showNameModal() {
+   els.nameModal.style.display = 'flex';
+   els.waitingOverlay.style.display = 'none';
+   els.waitingOverlay.classList.add('hidden');
++  loadJoinInfo();
+   setTimeout(() => els.joinNameInput.focus(), 80);
+ }
+ 
++async function loadJoinInfo() {
++  if (!els.ownerPasskeySection) return;
++  try {
++    const info = await api(`/api/rooms/${roomId}/info`);
++    els.ownerPasskeySection.classList.toggle('hidden', !info.hasOwnerPasskey);
++  } catch (e) {
++    els.ownerPasskeySection.classList.add('hidden');
++  }
++}
++
+ function hideNameModal() {
+   els.nameModal.style.display = 'none';
+ }
+@@ -998,6 +1012,32 @@ async function requestJoin(name) {
+   }
+ }
+ 
++async function reclaimAsOwner() {
++  const name = (els.joinNameInput.value.trim() || localStorage.getItem('ts_lastname') || 'Owner').slice(0, 40);
++  const passkey = (els.ownerPasskeyInput && els.ownerPasskeyInput.value) || '';
++  if (!passkey.trim()) return showToast('Enter the owner passkey', true);
++  if (els.ownerPasskeyBtn) els.ownerPasskeyBtn.disabled = true;
++  try {
++    const data = await api(`/api/rooms/${roomId}/reclaim`, {
++      method: 'POST',
++      body: JSON.stringify({
++        name,
++        passkey,
++        userId: state.userId || state.pendingId || undefined
++      })
++    });
++    localStorage.setItem('ts_lastname', name);
++    localStorage.removeItem('ts_pending_' + roomId);
++    if (els.ownerPasskeyInput) els.ownerPasskeyInput.value = '';
++    showToast('You are the owner again');
++    enterAsMember(data);
++  } catch (e) {
++    showToast(e.message, true);
++  } finally {
++    if (els.ownerPasskeyBtn) els.ownerPasskeyBtn.disabled = false;
++  }
++}
++
+ let uploadUi = { lastEmit: 0, hideTimer: null, local: false };
+ 
+ function setUploadProgress({ title, detail, percent, error, done, local = true }) {
+@@ -1518,6 +1558,13 @@ els.joinNameBtn.addEventListener('click', () => {
+   requestJoin(name);
+ });
+ els.joinNameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') els.joinNameBtn.click(); });
++if (els.ownerPasskeyBtn) els.ownerPasskeyBtn.addEventListener('click', reclaimAsOwner);
++if (els.ownerPasskeyInput) els.ownerPasskeyInput.addEventListener('keydown', (e) => {
++  if (e.key === 'Enter') {
++    e.preventDefault();
++    reclaimAsOwner();
++  }
++});
+ 
+ els.changeExpiryBtn.addEventListener('click', () => {
+   const hoursLeft = Math.max(1, (state.room.expiresAt - Date.now()) / 3600000);
+diff --git a/public/room.html b/public/room.html
+index 34da642..d02c372 100644
+--- a/public/room.html
++++ b/public/room.html
+@@ -236,6 +236,12 @@
+       <p class="text-sm text-slate-400 mb-4">Enter a display name. The owner must approve you before you can enter.</p>
+       <input id="joinNameInput" type="text" placeholder="Your name" maxlength="40" class="w-full px-4 py-3 bg-slate-900 border border-slate-700 rounded-lg mb-4 focus:outline-none focus:ring-2 focus:ring-pink-500"/>
+       <button id="joinNameBtn" class="w-full py-3 bg-gradient-to-r from-pink-600 to-indigo-600 hover:from-pink-500 hover:to-indigo-500 rounded-lg font-semibold transition">Request to Join</button>
++      <div id="ownerPasskeySection" class="hidden mt-5 pt-5 border-t border-slate-700">
++        <p class="text-sm font-semibold text-slate-200 mb-1">Already the owner?</p>
++        <p class="text-xs text-slate-400 mb-3">If you cleared site data, enter the room passkey to become owner again.</p>
++        <input id="ownerPasskeyInput" type="password" placeholder="Owner passkey" maxlength="64" autocomplete="current-password" class="w-full px-4 py-3 bg-slate-900 border border-slate-700 rounded-lg mb-3 focus:outline-none focus:ring-2 focus:ring-pink-500"/>
++        <button id="ownerPasskeyBtn" class="w-full py-3 bg-slate-700 hover:bg-slate-600 rounded-lg font-semibold transition">Enter as owner</button>
++      </div>
+     </div>
+   </div>
+ 
+diff --git a/server.js b/server.js
+index 568b134..1327268 100644
+--- a/server.js
++++ b/server.js
+@@ -140,6 +140,29 @@ function sanitizeFilename(name) {
+   return name.replace(/[\/\\\?\%\*\:\|"<>\x00-\x1f]/g, '_').slice(0, 200);
+ }
+ 
++function hashPasskey(passkey, salt) {
++  return crypto.scryptSync(String(passkey), salt, 32).toString('hex');
++}
++
++function makePasskeyRecord(plain) {
++  const salt = crypto.randomBytes(16).toString('hex');
++  return { salt, hash: hashPasskey(plain, salt) };
++}
++
++function verifyPasskey(room, plain) {
++  const rec = room && room.ownerPasskey;
++  if (!rec || !rec.hash || !rec.salt) return false;
++  let a, b;
++  try {
++    a = Buffer.from(hashPasskey(plain, rec.salt), 'hex');
++    b = Buffer.from(String(rec.hash), 'hex');
++  } catch (e) {
++    return false;
++  }
++  if (a.length !== b.length) return false;
++  return crypto.timingSafeEqual(a, b);
++}
++
+ function defaultPermissions(role) {
+   if (role === 'owner') {
+     return { can_chat: true, can_upload: true, can_delete: true, can_create_folder: true, can_rename: true };
+@@ -318,6 +341,13 @@ app.post('/api/rooms', (req, res) => {
+   const ownerId = uid();
+   const ownerName = (req.body.name && String(req.body.name).trim()) || 'Owner';
+   const roomName = (req.body.roomName && String(req.body.roomName).trim()) || 'Untitled Room';
++  const passkey = req.body.passkey == null ? '' : String(req.body.passkey);
++  if (passkey.length < 4) {
++    return res.status(400).json({ error: 'Owner passkey must be at least 4 characters' });
++  }
++  if (passkey.length > 64) {
++    return res.status(400).json({ error: 'Owner passkey is too long' });
++  }
+ 
+   const now = Date.now();
+   let expiryMs = DEFAULT_EXPIRY_HOURS * 60 * 60 * 1000;
+@@ -355,6 +385,7 @@ app.post('/api/rooms', (req, res) => {
+       joinedAt: now
+     }],
+     pendingUsers: [],
++    ownerPasskey: makePasskeyRecord(passkey),
+     files: [{ id: 'root', name: 'root', type: 'folder', parentId: null, createdAt: now }],
+     messages: []
+   };
+@@ -402,6 +433,87 @@ app.post('/api/rooms/:roomId/join', (req, res) => {
+   res.json({ status: 'pending', pendingId, name, roomName: room.name });
+ });
+ 
++// Public room info (safe to show on the join screen)
++app.get('/api/rooms/:roomId/info', (req, res) => {
++  const room = getRoom(req.params.roomId);
++  if (!room) return res.status(404).json({ error: 'Room not found or expired' });
++  res.json({
++    name: room.name,
++    hasOwnerPasskey: !!(room.ownerPasskey && room.ownerPasskey.hash)
++  });
++});
++
++// Reclaim ownership with the room passkey (after lost site data)
++app.post('/api/rooms/:roomId/reclaim', (req, res) => {
++  const room = getRoom(req.params.roomId);
++  if (!room) return res.status(404).json({ error: 'Room not found or expired' });
++  if (!room.ownerPasskey || !room.ownerPasskey.hash) {
++    return res.status(400).json({ error: 'This room has no owner passkey' });
++  }
++  const passkey = req.body.passkey == null ? '' : String(req.body.passkey);
++  if (!verifyPasskey(room, passkey)) {
++    return res.status(403).json({ error: 'Wrong passkey' });
++  }
++
++  const name = (req.body.name && String(req.body.name).trim().slice(0, 40)) || 'Owner';
++  let userId = req.body.userId;
++  let user = userId ? getUser(room, userId) : null;
++  const pending = userId ? getPending(room, userId) : null;
++
++  for (const u of room.users) {
++    if (u.role === 'owner' && (!user || u.id !== user.id)) {
++      u.role = 'member';
++      u.permissions = defaultPermissions('member');
++    }
++  }
++
++  if (pending) {
++    room.pendingUsers = (room.pendingUsers || []).filter(p => p.id !== pending.id);
++    if (!user) {
++      user = {
++        id: pending.id,
++        name: name || pending.name,
++        role: 'owner',
++        permissions: defaultPermissions('owner'),
++        joinedAt: Date.now()
++      };
++      room.users.push(user);
++    }
++    userId = user.id;
++  }
++
++  if (!user) {
++    userId = uid();
++    user = {
++      id: userId,
++      name,
++      role: 'owner',
++      permissions: defaultPermissions('owner'),
++      joinedAt: Date.now()
++    };
++    room.users.push(user);
++  } else {
++    user.name = name;
++    user.role = 'owner';
++    user.permissions = defaultPermissions('owner');
++  }
++
++  room.ownerId = user.id;
++  saveRooms();
++  broadcastRoom(room.id, 'users_updated', {
++    users: room.users.map(u => ({
++      id: u.id,
++      name: u.name,
++      role: u.role,
++      permissions: u.permissions,
++      online: !!onlineUsers[room.id]?.[u.id]
++    }))
++  });
++  broadcastRoom(room.id, 'pending_updated', { pendingUsers: room.pendingUsers || [] });
++  broadcastRoom(room.id, 'activity', { text: `${user.name} reclaimed ownership` });
++  res.json(roomPublicData(room, user.id));
++});
++
+ // Get room (admitted members only)
+ app.get('/api/rooms/:roomId', (req, res) => {
+   const { room, user } = requireMember(req, res);

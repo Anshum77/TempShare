@@ -72,6 +72,9 @@ const els = {
   nameModal: document.getElementById('nameModal'),
   joinNameInput: document.getElementById('joinNameInput'),
   joinNameBtn: document.getElementById('joinNameBtn'),
+  ownerPasskeySection: document.getElementById('ownerPasskeySection'),
+  ownerPasskeyInput: document.getElementById('ownerPasskeyInput'),
+  ownerPasskeyBtn: document.getElementById('ownerPasskeyBtn'),
   waitingOverlay: document.getElementById('waitingOverlay'),
   waitingText: document.getElementById('waitingText'),
   cancelWaitBtn: document.getElementById('cancelWaitBtn'),
@@ -363,7 +366,18 @@ function showNameModal() {
   els.nameModal.style.display = 'flex';
   els.waitingOverlay.style.display = 'none';
   els.waitingOverlay.classList.add('hidden');
+  loadJoinInfo();
   setTimeout(() => els.joinNameInput.focus(), 80);
+}
+
+async function loadJoinInfo() {
+  if (!els.ownerPasskeySection) return;
+  try {
+    const info = await api(`/api/rooms/${roomId}/info`);
+    els.ownerPasskeySection.classList.toggle('hidden', !info.hasOwnerPasskey);
+  } catch (e) {
+    els.ownerPasskeySection.classList.add('hidden');
+  }
 }
 
 function hideNameModal() {
@@ -998,6 +1012,32 @@ async function requestJoin(name) {
   }
 }
 
+async function reclaimAsOwner() {
+  const name = (els.joinNameInput.value.trim() || localStorage.getItem('ts_lastname') || 'Owner').slice(0, 40);
+  const passkey = (els.ownerPasskeyInput && els.ownerPasskeyInput.value) || '';
+  if (!passkey.trim()) return showToast('Enter the owner passkey', true);
+  if (els.ownerPasskeyBtn) els.ownerPasskeyBtn.disabled = true;
+  try {
+    const data = await api(`/api/rooms/${roomId}/reclaim`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name,
+        passkey,
+        userId: state.userId || state.pendingId || undefined
+      })
+    });
+    localStorage.setItem('ts_lastname', name);
+    localStorage.removeItem('ts_pending_' + roomId);
+    if (els.ownerPasskeyInput) els.ownerPasskeyInput.value = '';
+    showToast('You are the owner again');
+    enterAsMember(data);
+  } catch (e) {
+    showToast(e.message, true);
+  } finally {
+    if (els.ownerPasskeyBtn) els.ownerPasskeyBtn.disabled = false;
+  }
+}
+
 let uploadUi = { lastEmit: 0, hideTimer: null, local: false };
 
 function setUploadProgress({ title, detail, percent, error, done, local = true }) {
@@ -1518,6 +1558,13 @@ els.joinNameBtn.addEventListener('click', () => {
   requestJoin(name);
 });
 els.joinNameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') els.joinNameBtn.click(); });
+if (els.ownerPasskeyBtn) els.ownerPasskeyBtn.addEventListener('click', reclaimAsOwner);
+if (els.ownerPasskeyInput) els.ownerPasskeyInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    reclaimAsOwner();
+  }
+});
 
 els.changeExpiryBtn.addEventListener('click', () => {
   const hoursLeft = Math.max(1, (state.room.expiresAt - Date.now()) / 3600000);

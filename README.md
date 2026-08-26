@@ -10,6 +10,7 @@ Inspired by a mix of Google Drive + WhatsApp + Discord, but ephemeral and link-b
 ## ✨ Features
 
 - 🔗 **One-click room creation** — click "Create a Room", get a shareable link instantly.
+- 🔑 **Owner passkey** — set when creating the room. If you clear site data, enter the passkey on the join screen to become owner again.
 - 🚪 **Owner waiting room** — people who open the invite sit in a waiting room until the owner admits or declines them.
 - 👥 **Two roles only**
   - **Owner** — full administrative control (admit/deny, rename room, change expiry, delete files/folders, delete the room).
